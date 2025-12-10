@@ -2,8 +2,17 @@
 """Gemini-based LLM runner bridging ZMQ llm.request to llm.response.
 
 - Subscribes to `llm.request` on the downstream bus.
-- Calls Google Gemini (cloud) with a strict JSON system prompt.
+- Calls Google Gemini (cloud) with conversation memory and context.
 - Publishes `llm.response` with a parsed JSON body plus raw text.
+
+ARCHITECTURE NOTE (Comparison with OVOS/Rhasspy/Wyoming):
+Unlike local LLMs, cloud APIs like Gemini are STATELESS - each call is independent.
+This runner uses ConversationMemory to:
+1. Maintain conversation history across turns (like OVOS ConverseService)
+2. Inject robot state for context (similar to Rhasspy's context_input)
+3. Manage context window limits (like Wyoming's session management)
+
+Flow: llm.request → [Memory Context Injection] → Gemini → [Memory Update] → llm.response
 """
 from __future__ import annotations
 
@@ -32,12 +41,14 @@ from src.core.ipc import (
     publish_json,
 )
 from src.core.logging_setup import get_logger
+from src.llm.conversation_memory import ConversationMemory
 
 
-SYSTEM_PROMPT = (
+# Legacy system prompt (kept for reference) - now handled by ConversationMemory
+_LEGACY_SYSTEM_PROMPT = (
     "You are a robot assistant controlling a physical robot. "
     "You MUST reply with STRICT JSON only, no extra text or comments. "
-    "The JSON schema is: {"  # split to avoid quote confusion
+    "The JSON schema is: {"
     "'speak': string, 'direction': 'forward'|'back'|'left'|'right'|'stop', 'track': string}. "
     "If you do not want to move, use 'direction': 'stop'. "
     "If there is nothing to track, use an empty string for 'track'. "
@@ -93,10 +104,20 @@ class GeminiRunner:
         except Exception:
             pass
 
+        # Initialize WITHOUT system_instruction - we inject context per-request
+        # This enables multi-turn conversations with memory
         self.model = genai.GenerativeModel(
             self.gcfg.model,
-            system_instruction=SYSTEM_PROMPT,
             generation_config=generation_config,
+        )
+        
+        # Initialize conversation memory
+        # Max turns and timeout can be configured in system.yaml under llm.memory_*
+        max_turns = int(llm_cfg.get("memory_max_turns", 10))
+        timeout_s = float(llm_cfg.get("conversation_timeout_s", 120.0))
+        self.memory = ConversationMemory(
+            max_turns=max_turns,
+            conversation_timeout_s=timeout_s,
         )
 
         self.ctx = zmq.Context.instance()
@@ -107,7 +128,10 @@ class GeminiRunner:
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
-        self.logger.info("GeminiRunner initialized (model=%s)", self.gcfg.model)
+        self.logger.info(
+            "GeminiRunner initialized (model=%s, memory_turns=%d, timeout=%ds)",
+            self.gcfg.model, max_turns, timeout_s
+        )
 
     def _handle_signal(self, *_: int) -> None:
         self.shutdown()
@@ -127,13 +151,26 @@ class GeminiRunner:
 
     @staticmethod
     def _build_user_prompt(msg: Dict[str, Any]) -> str:
+        """Extract user text from message (vision context is handled by memory)."""
         text = str(msg.get("text", "")).strip()
-        if not text:
-            return ""
+        return text
+
+    def _update_memory_from_message(self, msg: Dict[str, Any]) -> None:
+        """Update conversation memory with message context."""
+        # Update robot state if vision data is present
         vision = msg.get("vision")
         if vision:
-            return f"User said: {text}\nCurrent vision context (JSON): {json.dumps(vision)}"
-        return text
+            self.memory.update_robot_state(vision=vision)
+        
+        # Update direction if provided
+        direction = msg.get("direction")
+        if direction:
+            self.memory.update_robot_state(direction=direction)
+        
+        # Update tracking target if provided
+        track = msg.get("track")
+        if track is not None:
+            self.memory.update_robot_state(tracking_target=track if track else None)
 
     @staticmethod
     def _extract_json(raw: str) -> Dict[str, Any]:
@@ -156,6 +193,7 @@ class GeminiRunner:
         return {}
 
     def _call_gemini(self, prompt: str) -> tuple[Dict[str, Any], str]:
+        """Call Gemini API with full context prompt."""
         if not prompt:
             return {}, ""
         start = time.time()
@@ -174,7 +212,7 @@ class GeminiRunner:
         return parsed, raw_text
 
     def run(self) -> None:
-        self.logger.info("GeminiRunner listening on %s", TOPIC_LLM_REQ)
+        self.logger.info("GeminiRunner listening on %s (with conversation memory)", TOPIC_LLM_REQ)
         while self._running:
             try:
                 topic, payload = self.sub.recv_multipart()
@@ -189,13 +227,27 @@ class GeminiRunner:
                 self.logger.error("Invalid llm.request payload: %s", exc)
                 continue
 
-            prompt = self._build_user_prompt(msg)
-            if not prompt:
-                self.logger.warning("Empty prompt in llm.request; skipping")
+            user_text = self._build_user_prompt(msg)
+            if not user_text:
+                self.logger.warning("Empty user text in llm.request; skipping")
                 continue
 
+            # Update memory with any context from the message
+            self._update_memory_from_message(msg)
+            
+            # Add user message to memory
+            self.memory.add_user_message(user_text)
+            
+            # Build full context prompt with memory, robot state, and conversation history
+            full_prompt = self.memory.build_context(current_query=user_text)
+            self.logger.debug(
+                "Memory state: %s, prompt_len=%d",
+                self.memory.get_state().name,
+                len(full_prompt),
+            )
+
             try:
-                parsed, raw = self._call_gemini(prompt)
+                parsed, raw = self._call_gemini(full_prompt)
                 ok = bool(parsed)
             except Exception as exc:  # noqa: BLE001
                 ok = False
@@ -209,13 +261,28 @@ class GeminiRunner:
             parsed.setdefault("direction", "stop")
             parsed.setdefault("track", "")
 
+            # Store assistant response in memory for context continuity
+            speak_text = parsed.get("speak", "")
+            if speak_text:
+                self.memory.add_assistant_message(speak_text)
+            
+            # Update robot state from response
+            if parsed.get("direction"):
+                self.memory.update_robot_state(direction=parsed["direction"])
+            if parsed.get("track"):
+                self.memory.update_robot_state(tracking_target=parsed["track"])
+
             resp_payload = {
                 "ok": ok,
                 "json": parsed,
                 "raw": raw,
+                "memory_state": self.memory.get_state().name,  # For debugging
             }
             publish_json(self.pub, TOPIC_LLM_RESP, resp_payload)
-            self.logger.info("Published llm.response ok=%s", ok)
+            self.logger.info(
+                "Published llm.response ok=%s memory=%s",
+                ok, self.memory.get_state().name
+            )
 
 
 def main() -> None:

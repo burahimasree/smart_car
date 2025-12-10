@@ -113,6 +113,23 @@ llm:
   # Optional tuning knobs
   temperature: 0.2
   top_p: 0.9
+  
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CONVERSATION MEMORY CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Cloud LLMs (Gemini) are stateless - these settings control local memory.
+  # Inspired by OVOS ConverseService and Wyoming session management.
+  
+  # Maximum conversation turns to keep in memory (user + assistant pairs)
+  # Higher = more context but larger prompts and higher latency
+  memory_max_turns: 10
+  
+  # Conversation timeout in seconds. After this duration of inactivity,
+  # the conversation resets (like OVOS skill deactivation)
+  conversation_timeout_s: 120
+  
+  # Robot assistant name (used in system prompt)
+  assistant_name: GENNY
 
 vision:
   model_path_onnx: ${PROJECT_ROOT}/models/vision/yolo11n.onnx

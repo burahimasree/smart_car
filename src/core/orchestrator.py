@@ -63,6 +63,7 @@ class Orchestrator:
             "vision_capture_pending": None,
             "vision_request_text": "",
             "tracking_target": None,
+            "last_nav_direction": "stopped",  # Track for LLM context
         }
 
         # Heartbeat auto-trigger configuration
@@ -92,6 +93,8 @@ class Orchestrator:
         if target:
             payload["target"] = target
         publish_json(self.cmd_pub, TOPIC_NAV, payload)
+        # Track last direction for context in LLM requests
+        self.state["last_nav_direction"] = direction
 
     def _ipc_upstream(self) -> str:
         return os.environ.get("IPC_UPSTREAM", self.config["ipc"]["upstream"])
@@ -243,9 +246,28 @@ class Orchestrator:
         self._send_display_state("thinking")
 
     def _publish_llm_request(self, text: str, *, vision: Optional[Dict[str, Any]] = None) -> None:
+        """Publish LLM request with full robot context.
+        
+        The GeminiRunner's ConversationMemory will use this context to:
+        1. Update robot state (direction, tracking, vision)
+        2. Build a context-aware prompt with history
+        """
         payload: Dict[str, Any] = {"text": text}
+        
+        # Include vision context if available
         if vision:
             payload["vision"] = vision
+        
+        # Include current robot state for memory context
+        # This helps the LLM understand the current situation
+        if self.state.get("tracking_target"):
+            payload["track"] = self.state["tracking_target"]
+        
+        # Include last known direction (from nav commands)
+        # Note: We track this in orchestrator for context continuity
+        last_direction = self.state.get("last_nav_direction", "stopped")
+        payload["direction"] = last_direction
+        
         publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
         self.state["llm_pending"] = True
         self._send_display_state("thinking")
