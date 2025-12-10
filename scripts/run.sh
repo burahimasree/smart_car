@@ -66,19 +66,15 @@ log "Starting Offline Pi Assistant Services"
 log "PROJECT_ROOT: $PROJECT_ROOT"
 log "========================================="
 
-# AudioManager (central mic owner)
-start_service "$PROJECT_ROOT/.venvs/stte" "src.audio.audio_manager" "audio-manager"
-sleep 1
-
 # Core orchestrator (must start first to bind IPC sockets)
 start_service "$PROJECT_ROOT/.venvs/core" "src.core.orchestrator" "orchestrator"
 sleep 1  # Give orchestrator time to bind sockets
 
-# Wakeword detection (via AudioManager)
-start_service "$PROJECT_ROOT/.venvs/stte" "src.wakeword.porcupine_runner" "wakeword" "--use-audio-manager"
+# Wakeword detection (direct dsnoop)
+start_service "$PROJECT_ROOT/.venvs/stte" "src.wakeword.service" "wakeword"
 
-# STT wrapper (consumes AudioManager audio)
-start_service "$PROJECT_ROOT/.venvs/stte" "src.stt.stt_wrapper_runner" "stt-wrapper"
+# STT service (dsnoop capture)
+start_service "$PROJECT_ROOT/.venvs/stte" "src.stt.service" "stt"
 
 # Vision (YOLO object detection)
 start_service "$PROJECT_ROOT/.venvs/visn" "src.vision.vision_runner" "vision"

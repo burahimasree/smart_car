@@ -1,11 +1,11 @@
- [Unit]
-Description=STT Wrapper service (AudioManager-based STT)
-After=network.target audio-manager.service
+[Unit]
+Description=STT Service (dsnoop capture)
+After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=/home/dev/project_root
-ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.stt.stt_wrapper_runner --config config/system.yaml
+ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.stt.service --config config/system.yaml
 Restart=on-failure
 RestartSec=3
 

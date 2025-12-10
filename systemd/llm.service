@@ -1,0 +1,17 @@
+[Unit]
+Description=Smart Car LLM (Google Gemini)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/project_root
+Environment=PROJECT_ROOT=/home/dev/project_root
+# Optionally load GEMINI_API_KEY from a drop-in file
+EnvironmentFile=-/etc/default/smartcar-llm
+ExecStart=/home/dev/project_root/.venvs/llme/bin/python -m src.llm.gemini_runner
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

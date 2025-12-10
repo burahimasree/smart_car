@@ -10,7 +10,7 @@ import numpy as np
 import zmq
 
 from src.core.config_loader import load_config
-from src.core.ipc import TOPIC_CMD_PAUSE_VISION, TOPIC_VISN, make_publisher, make_subscriber, publish_json
+from src.core.ipc import TOPIC_CMD_PAUSE_VISION, TOPIC_CMD_VISN_CAPTURE, TOPIC_VISN, make_publisher, make_subscriber, publish_json
 from src.core.logging_setup import get_logger
 from src.vision.detector import Detection, VisionConfig
 from src.vision.pipeline import VisionPipeline
@@ -40,10 +40,18 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
     return frame
 
 
-def publish_detections(pub_sock, detections: list[Detection], ts: float) -> None:
+def publish_detections(pub_sock, detections: list[Detection], ts: float, request_id: str | None = None) -> None:
+    if not detections:
+        payload = {"label": "none", "bbox": [0, 0, 0, 0], "confidence": 0.0, "ts": ts}
+        if request_id:
+            payload["request_id"] = request_id
+        publish_json(pub_sock, TOPIC_VISN, payload)
+        return
     for det in detections:
         x1, y1, x2, y2 = det.bbox
         payload = {"label": det.label, "bbox": [x1, y1, x2, y2], "confidence": det.confidence, "ts": ts}
+        if request_id:
+            payload["request_id"] = request_id
         publish_json(pub_sock, TOPIC_VISN, payload)
 
 
@@ -133,10 +141,13 @@ def run():
 
     pub = make_publisher(cfg, channel="upstream")
     ctrl_sub = make_subscriber(cfg, topic=TOPIC_CMD_PAUSE_VISION, channel="downstream")
+    ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_VISN_CAPTURE)
     poller = zmq.Poller()
     poller.register(ctrl_sub, zmq.POLLIN)
 
     paused = False
+    capture_once = False
+    capture_request_id: str | None = None
     frame_counter = 0
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
@@ -152,16 +163,22 @@ def run():
             socks = dict(poller.poll(timeout=10))
             if ctrl_sub in socks:
                 try:
-                    _topic, raw = ctrl_sub.recv_multipart(zmq.NOBLOCK)
+                    topic, raw = ctrl_sub.recv_multipart(zmq.NOBLOCK)
                     msg = json.loads(raw)
-                    paused = bool(msg.get("pause", False))
-                    logger.info("Vision paused=%s", paused)
+                    if topic == TOPIC_CMD_PAUSE_VISION:
+                        paused = bool(msg.get("pause", False))
+                        logger.info("Vision paused=%s", paused)
+                    elif topic == TOPIC_CMD_VISN_CAPTURE:
+                        capture_once = True
+                        capture_request_id = msg.get("request_id")
+                        logger.info("Vision capture requested (id=%s)", capture_request_id)
                 except zmq.Again:
                     pass
                 except json.JSONDecodeError as exc:
-                    logger.error("Pause command decode error: %s", exc)
+                    logger.error("Vision command decode error: %s", exc)
 
-            if paused:
+            force_capture = capture_once
+            if paused and not force_capture:
                 time.sleep(0.05)
                 continue
 
@@ -173,7 +190,10 @@ def run():
 
             detections = pipeline.infer_once(frame)
             ts = time.time()
-            publish_detections(pub, detections, ts)
+            publish_detections(pub, detections, ts, request_id=capture_request_id if force_capture else None)
+            if force_capture:
+                capture_once = False
+                capture_request_id = None
             frame_counter += 1
 
             if args.show:

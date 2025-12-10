@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dataclasses import dataclass
+import zmq
 
 try:  # Import optional typed configs for legacy assistant wrapper
     from src.stt.engine import RecognizerConfig, STTBackend  # type: ignore
@@ -25,6 +26,7 @@ except Exception:  # pragma: no cover
 from src.core.config_loader import load_config
 from src.core.ipc import (
     TOPIC_CMD_PAUSE_VISION,
+    TOPIC_CMD_VISN_CAPTURE,
     TOPIC_CMD_LISTEN_START,
     TOPIC_CMD_LISTEN_STOP,
     TOPIC_DISPLAY_STATE,
@@ -40,9 +42,6 @@ from src.core.ipc import (
     publish_json,
 )
 from src.core.logging_setup import get_logger
-from src.stt.engine import STTEngine
-
-
 logger = get_logger("orchestrator", Path("logs"))
 
 
@@ -53,22 +52,6 @@ class Orchestrator:
         self.cmd_pub = make_publisher(self.config, channel="downstream", bind=True)
         self.events_sub = make_subscriber(self.config, channel="upstream", bind=True)
 
-        # When running with the dedicated STT wrapper + AudioManager
-        # architecture, the orchestrator should avoid spawning the
-        # legacy STT engine process and instead rely solely on
-        # cmd.listen.start/stop and stt.transcription events.
-        stt_cfg = self.config.get("stt", {}) or {}
-        self.stt_use_wrapper: bool = bool(
-            stt_cfg.get("use_wrapper")
-            or os.environ.get("STT_USE_WRAPPER") == "1"
-        )
-        if self.stt_use_wrapper:
-            if os.environ.get("STT_ENGINE_DISABLED") is None:
-                os.environ["STT_ENGINE_DISABLED"] = "1"
-            self.stt_engine: Optional[STTEngine] = None
-        else:
-            self.stt_engine = STTEngine.from_config(self.config)
-
         self.state: Dict[str, Any] = {
             "vision_paused": False,
             "stt_active": False,
@@ -77,7 +60,16 @@ class Orchestrator:
             "last_transcript": "",
             "last_visn": None,
             "stt_started_ts": None,
+            "vision_capture_pending": None,
+            "vision_request_text": "",
+            "tracking_target": None,
         }
+
+        # Heartbeat auto-trigger configuration
+        orch_cfg = self.config.get("orchestrator", {}) or {}
+        self.auto_trigger_enabled = bool(orch_cfg.get("auto_trigger_enabled", True))
+        self.auto_trigger_interval = float(orch_cfg.get("auto_trigger_interval", 60.0))
+        self.last_interaction_ts = time.time()
 
     def _send_pause_vision(self, pause: bool) -> None:
         publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": pause})
@@ -107,28 +99,21 @@ class Orchestrator:
     def _start_stt(self) -> None:
         if self.state.get("stt_active"):
             return
-        if self.stt_use_wrapper:
-            # Wrapper + AudioManager own the actual capture; we
-            # simply track logical state and rely on cmd.listen.start
-            # having been published.
-            self.state["stt_active"] = True
-            self.state["stt_started_ts"] = time.time()
-            return
-
-        started = self.stt_engine.start_session(self._ipc_upstream())
-        if started:
-            self.state["stt_active"] = True
-            self.state["stt_started_ts"] = time.time()
-        else:
-            logger.warning("STT session already running; ignoring")
+        self.state["stt_active"] = True
+        self.state["stt_started_ts"] = time.time()
+        self.last_interaction_ts = time.time()
 
     def _stop_stt(self) -> None:
         if not self.state.get("stt_active"):
             return
-        if not self.stt_use_wrapper:
-            self.stt_engine.stop_session()
         self.state["stt_active"] = False
         self.state["stt_started_ts"] = None
+
+    def _reset_interaction(self) -> None:
+        self.last_interaction_ts = time.time()
+
+    def _is_idle(self) -> bool:
+        return not (self.state["stt_active"] or self.state["llm_pending"] or self.state["tts_pending"])
 
     def _check_timeouts(self) -> None:
         """Apply simple timeouts for long-running STT sessions.
@@ -156,17 +141,21 @@ class Orchestrator:
 
     def on_wakeword(self, payload: Dict[str, Any]) -> None:
         logger.info("Wakeword: %s", payload)
-        # Pause vision immediately
+        self._trigger_listening()
+
+    def _trigger_listening(self) -> None:
+        """Common entry for auto-trigger, manual trigger, or wakeword."""
+        self._reset_interaction()
         if not self.state.get("vision_paused"):
             self._send_pause_vision(True)
         publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_START, {"start": True})
-        # Start STT listening session (runner publishes on upstream bus)
         self._start_stt()
         self._send_display_state("listening")
 
     def on_stt(self, payload: Dict[str, Any]) -> None:
         if not self.state.get("stt_active"):
             return
+        self._reset_interaction()
         text = str(payload.get("text", "")).strip()
         confidence = float(payload.get("confidence", 0.0) or 0.0)
         min_conf = float(self.config.get("stt", {}).get("min_confidence", 0.0) or 0.0)
@@ -191,10 +180,12 @@ class Orchestrator:
             return
         logger.info("STT transcription received (%d chars)", len(text))
         self.state["last_transcript"] = text
-        publish_json(self.cmd_pub, TOPIC_LLM_REQ, {"text": text})
-        self.state["llm_pending"] = True
         self.state["tts_pending"] = False
-        self._send_display_state("thinking")
+        vision_requested = self._should_request_vision(text)
+        if vision_requested:
+            self._request_vision_capture(text)
+        else:
+            self._publish_llm_request(text)
         # Resume vision after transcription per latest contract
         self._stop_stt()
         publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_STOP, {"stop": True})
@@ -228,10 +219,36 @@ class Orchestrator:
             self._send_tts(speak)
             self.state["tts_pending"] = True
             self._send_display_state("speaking")
-        else:
+        track_target = body.get("track")
+        if track_target:
+            self.state["tracking_target"] = str(track_target).lower()
+            logger.info("Tracking target set to %s", self.state["tracking_target"])
+            self._send_display_state("tracking")
+
+        if not speak and not direction and not track_target:
             self.state["tts_pending"] = False
             self._send_pause_vision(False)
             self._send_display_state("idle")
+
+    def _should_request_vision(self, text: str) -> bool:
+        lowered = text.lower()
+        keywords = ["what do you see", "what are you seeing", "describe what you see", "what can you see"]
+        return any(key in lowered for key in keywords)
+
+    def _request_vision_capture(self, transcript: str) -> None:
+        request_id = f"visn-{int(time.time() * 1000)}"
+        self.state["vision_capture_pending"] = request_id
+        self.state["vision_request_text"] = transcript
+        publish_json(self.cmd_pub, TOPIC_CMD_VISN_CAPTURE, {"request_id": request_id})
+        self._send_display_state("thinking")
+
+    def _publish_llm_request(self, text: str, *, vision: Optional[Dict[str, Any]] = None) -> None:
+        payload: Dict[str, Any] = {"text": text}
+        if vision:
+            payload["vision"] = vision
+        publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
+        self.state["llm_pending"] = True
+        self._send_display_state("thinking")
 
     def on_tts(self, payload: Dict[str, Any]) -> None:
         # Expect a completion marker; different implementations may vary
@@ -239,39 +256,96 @@ class Orchestrator:
         if done:
             logger.info("TTS completed")
             self.state["tts_pending"] = False
-            self._send_pause_vision(False)
-            self._send_display_state("idle")
+            if self.state.get("tracking_target"):
+                self._send_display_state("tracking")
+            else:
+                self._send_pause_vision(False)
+                self._send_display_state("idle")
 
     def on_visn(self, payload: Dict[str, Any]) -> None:
         self.state["last_visn"] = payload
         if not self.state["vision_paused"]:
             logger.debug("Vision: %s", payload)
+        pending = self.state.get("vision_capture_pending")
+        request_id = payload.get("request_id")
+        if pending and request_id == pending:
+            text = self.state.get("vision_request_text", "")
+            self.state["vision_capture_pending"] = None
+            self.state["vision_request_text"] = ""
+            self._publish_llm_request(text or self.state.get("last_transcript", ""), vision=payload)
+
+        # Visual servoing: chase target
+        target = self.state.get("tracking_target")
+        if target:
+            label = str(payload.get("label", "")).lower()
+            if target in label:
+                bbox = payload.get("bbox", [0, 0, 0, 0])
+                try:
+                    cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+                except Exception:
+                    return
+                direction = "forward"
+                if cx < 200:
+                    direction = "left"
+                elif cx > 440:
+                    direction = "right"
+                logger.info("Visual servoing target=%s cx=%.1f -> %s", label, cx, direction)
+                self._send_nav(direction)
+
+    def _maybe_auto_trigger(self) -> None:
+        if not self.auto_trigger_enabled:
+            return
+        if not self._is_idle():
+            return
+        if time.time() - self.last_interaction_ts > self.auto_trigger_interval:
+            logger.warning(
+                "Auto-trigger: idle for %.1fs; forcing listening", time.time() - self.last_interaction_ts
+            )
+            self._trigger_listening()
 
     def run(self) -> None:
-        logger.info("Orchestrator running (upstream %s, downstream %s)", self.config["ipc"]["upstream"], self.config["ipc"]["downstream"])
+        logger.info(
+            "Orchestrator running (upstream %s, downstream %s) auto_trigger=%s interval=%.1fs",
+            self.config["ipc"]["upstream"],
+            self.config["ipc"]["downstream"],
+            self.auto_trigger_enabled,
+            self.auto_trigger_interval,
+        )
+
+        poller = zmq.Poller()
+        poller.register(self.events_sub, zmq.POLLIN)
+
         while True:
-            topic, data = self.events_sub.recv_multipart()
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                logger.error("Invalid JSON on topic %s", topic)
-                continue
+            socks = dict(poller.poll(timeout=100))  # 100 ms
+            if self.events_sub in socks:
+                try:
+                    topic, data = self.events_sub.recv_multipart()
+                except Exception as exc:  # pragma: no cover
+                    logger.error("Recv error: %s", exc)
+                    continue
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.error("Invalid JSON on topic %s", topic)
+                    continue
 
-            # Apply any session timeouts before handling the next
-            # event so that a hung STT pipeline cannot wedge the
-            # system indefinitely.
-            self._check_timeouts()
+                self._check_timeouts()
 
-            if topic == TOPIC_WW_DETECTED:
-                self.on_wakeword(payload)
-            elif topic == TOPIC_STT:
-                self.on_stt(payload)
-            elif topic == TOPIC_LLM_RESP:
-                self.on_llm(payload)
-            elif topic == TOPIC_VISN:
-                self.on_visn(payload)
-            elif topic == TOPIC_TTS:
-                self.on_tts(payload)
+                if topic == TOPIC_WW_DETECTED:
+                    self.on_wakeword(payload)
+                elif topic == TOPIC_STT:
+                    self.on_stt(payload)
+                elif topic == TOPIC_LLM_RESP:
+                    self.on_llm(payload)
+                elif topic == TOPIC_VISN:
+                    self.on_visn(payload)
+                elif topic == TOPIC_TTS:
+                    self.on_tts(payload)
+                elif topic == TOPIC_CMD_LISTEN_START:
+                    # Treat manual trigger same as wake
+                    self._trigger_listening()
+
+            self._maybe_auto_trigger()
 
 
 def main() -> None:

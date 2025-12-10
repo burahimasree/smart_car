@@ -6,7 +6,7 @@ audio:
   # When true, services (wakeword, STT wrapper) will prefer routing
   # microphone access via the AudioManager service instead of opening
   # ALSA/PortAudio directly.
-  use_audio_manager: true
+  use_audio_manager: false
   # Central AudioManager control endpoint (ZeroMQ REQ/REP for JSON RPC).
   control_endpoint: tcp://127.0.0.1:6020
   # Optional ALSA device node used by systemd ExecStartPre fuser.
@@ -21,6 +21,8 @@ audio:
   hw_buffer_ms: 20
   wakeword_frame_ms: 30
   stt_chunk_ms: 500
+  mic_device: default
+  speaker_device: default
 
 wakeword:
   engine: porcupine        # forced porcupine engine
@@ -44,10 +46,12 @@ wakeword:
     tflite_model: ${PROJECT_ROOT}/models/wakeword/genny.tflite
   stte_venv: ${PROJECT_ROOT}/.venvs/stte
   fallback_engine: pytorch
+  # Use shared ALSA dsnoop device configured via /etc/asound.conf
+  mic_device: default
 
 stt:
   engine: faster_whisper
-  mic_hw: plughw:3,0
+  mic_hw: default
   sample_rate: 16000
   language: en
   silence_threshold: 0.35
@@ -55,13 +59,10 @@ stt:
   max_capture_seconds: 15
   min_confidence: 0.5  # Added: gate low-confidence transcripts
   runner_venv: ${PROJECT_ROOT}/.venvs/stte/bin/python
-  # When true, orchestrator drives STT via the wrapper service and
-  # AudioManager instead of spawning the legacy process-level STT
-  # runners directly.
-  use_wrapper: true
+  mic_device: default
   # Safety timeout in seconds for a single listen session; if exceeded,
   # orchestrator cancels listening and resumes vision.
-  timeout_seconds: 15
+  timeout_seconds: 10.0
   engines:
     faster_whisper:
       model: tiny.en
@@ -95,14 +96,14 @@ tts:
   playback: aplay
 
 llm:
-  engine: llama.cpp
-  model_path: ${PROJECT_ROOT}/models/llm/tinyllama-1.1b-chat.Q4_K_M.gguf
-  host: 127.0.0.1
-  port: 8080
-  max_context: 2048
-  threads: 4
-  gpu_layers: 0
-  server_bin: ${PROJECT_ROOT}/third_party/llama.cpp/bin/llama-server
+  engine: gemini
+  # Cloud Gemini model configuration
+  gemini_model: gemini-1.5-flash
+  # API key is read from environment by default
+  gemini_api_key: ${ENV:GEMINI_API_KEY}
+  # Optional tuning knobs
+  temperature: 0.2
+  top_p: 0.9
 
 vision:
   model_path_onnx: ${PROJECT_ROOT}/models/vision/yolo11n.onnx

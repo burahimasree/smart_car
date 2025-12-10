@@ -166,8 +166,16 @@ def dump_ring_buffer(ring_buffer: AudioRingBuffer | None, dump_path: Optional[Pa
 
 
 def run_sim(pub: zmq.Socket, after: float, keyword: str, variant: str) -> None:
+    """Simulation helper used by tests and manual checks.
+
+    To avoid PUB/SUB handshake races, this publishes the simulated
+    wakeword event multiple times after the initial delay so that a
+    late-subscribing test still receives at least one payload.
+    """
     time.sleep(after)
-    publish_detected(pub, 0.98, "sim", keyword, variant)
+    for _ in range(5):
+        publish_detected(pub, 0.98, "sim", keyword, variant)
+        time.sleep(0.05)
 
 
 def try_import_porcupine() -> Optional[Any]:

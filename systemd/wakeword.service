@@ -1,14 +1,15 @@
 [Unit]
-Description=Pi Assistant Wakeword Detector (Porcupine via AudioManager)
-After=network.target sound.target audio-manager.service
-Wants=audio-manager.service
+Description=Pi Assistant Wakeword Service (Porcupine dsnoop)
+After=network.target sound.target
 
 [Service]
 Type=simple
 WorkingDirectory=/home/dev/project_root
+Environment=PV_ACCESS_KEY=${PV_ACCESS_KEY}
+Environment=PYTHONPATH=/home/dev/project_root
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/dev/project_root/.env
-ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.wakeword.porcupine_runner --config /home/dev/project_root/config/system.yaml --use-audio-manager
+ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.wake.service --config config/system.yaml
 Restart=always
 RestartSec=3
 TimeoutStartSec=30
