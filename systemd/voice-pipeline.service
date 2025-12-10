@@ -1,0 +1,34 @@
+[Unit]
+Description=Unified Voice Pipeline (Wakeword + STT)
+After=network.target sound.target
+# Conflicts with old separate services
+Conflicts=wakeword.service stt-wrapper.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/project_root
+Environment=PV_ACCESS_KEY=${PV_ACCESS_KEY}
+Environment=PYTHONPATH=/home/dev/project_root
+Environment=PYTHONUNBUFFERED=1
+Environment=PROJECT_ROOT=/home/dev/project_root
+EnvironmentFile=/home/dev/project_root/.env
+
+# Kill any process holding the mic before starting
+ExecStartPre=/usr/bin/fuser -k /dev/snd/pcmC3D0c || true
+
+ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.audio.unified_voice_pipeline --config config/system.yaml
+
+Restart=always
+RestartSec=3
+TimeoutStartSec=60
+User=dev
+Group=dev
+StandardOutput=append:/home/dev/project_root/logs/voice_pipeline.log
+StandardError=append:/home/dev/project_root/logs/voice_pipeline.error.log
+
+# Resource limits for Raspberry Pi
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

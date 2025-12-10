@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -17,6 +19,92 @@ from src.vision.pipeline import VisionPipeline
 
 
 logger = get_logger("vision.runner", Path("logs"))
+
+
+class LatestFrameGrabber(threading.Thread):
+    """Threaded camera capture that always provides the latest frame.
+    
+    This pattern prevents frame lag by:
+    1. Running capture in a dedicated thread
+    2. Discarding old frames continuously
+    3. Only keeping the most recent frame for inference
+    
+    Without this, OpenCV's internal buffer fills up and you process
+    stale frames (seconds old) instead of live video.
+    """
+    
+    def __init__(self, camera_index: int, target_fps: float = 15.0) -> None:
+        super().__init__(daemon=True, name="FrameGrabber")
+        self.camera_index = camera_index
+        self.target_fps = max(1.0, target_fps)
+        self.frame_interval = 1.0 / self.target_fps
+        
+        # Open camera with minimal buffering
+        self.cap = cv2.VideoCapture(camera_index)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+        
+        # Thread-safe frame storage
+        self._lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self._frame_time: float = 0.0
+        self._frame_count: int = 0
+        
+        # Control
+        self._stop_event = threading.Event()
+        self._opened = self.cap.isOpened()
+    
+    def run(self) -> None:
+        """Continuously capture frames, keeping only the latest."""
+        last_time = 0.0
+        
+        while not self._stop_event.is_set():
+            now = time.perf_counter()
+            
+            # Rate limiting
+            if now - last_time < self.frame_interval:
+                time.sleep(0.001)
+                continue
+            
+            # Capture frame
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                time.sleep(0.01)
+                continue
+            
+            # Store latest frame
+            with self._lock:
+                self._latest_frame = frame
+                self._frame_time = now
+                self._frame_count += 1
+            
+            last_time = now
+    
+    def get_frame(self) -> tuple[Optional[np.ndarray], float]:
+        """Get the latest frame and its capture time.
+        
+        Returns:
+            (frame, timestamp) or (None, 0.0) if no frame available
+        """
+        with self._lock:
+            if self._latest_frame is None:
+                return None, 0.0
+            return self._latest_frame.copy(), self._frame_time
+    
+    def get_frame_count(self) -> int:
+        """Get total frames captured."""
+        with self._lock:
+            return self._frame_count
+    
+    def is_opened(self) -> bool:
+        """Check if camera was successfully opened."""
+        return self._opened
+    
+    def stop(self) -> None:
+        """Stop capture and release camera."""
+        self._stop_event.set()
+        self.join(timeout=2.0)
+        if self.cap:
+            self.cap.release()
 
 
 class MockDetector:
@@ -147,12 +235,24 @@ def run():
 
     paused = False
     capture_once = False
-    capture_request_id: str | None = None
+    capture_request_id: Optional[str] = None
     frame_counter = 0
-    cap = cv2.VideoCapture(camera_index)
-    if not cap.isOpened():
+    
+    # Use threaded frame grabber for latest-frame pattern
+    # This prevents frame lag from OpenCV's internal buffer
+    target_fps = float(vis_cfg.get("target_fps", 15.0))
+    grabber = LatestFrameGrabber(camera_index, target_fps=target_fps)
+    
+    if not grabber.is_opened():
         logger.error("Cannot open camera index %s", camera_index)
         return
+    
+    grabber.start()
+    logger.info("Started threaded frame grabber at %.1f FPS", target_fps)
+    
+    # Inference rate limiting
+    min_inference_interval = 1.0 / target_fps
+    last_inference_time = 0.0
 
     try:
         while True:
@@ -160,7 +260,8 @@ def run():
                 logger.info("Reached max frame budget (%s), exiting", args.max_frames)
                 break
 
-            socks = dict(poller.poll(timeout=10))
+            # Non-blocking command check
+            socks = dict(poller.poll(timeout=0))
             if ctrl_sub in socks:
                 try:
                     topic, raw = ctrl_sub.recv_multipart(zmq.NOBLOCK)
@@ -179,22 +280,37 @@ def run():
 
             force_capture = capture_once
             if paused and not force_capture:
-                time.sleep(0.05)
+                time.sleep(0.01)  # Reduced sleep when paused
                 continue
 
-            ok, frame = cap.read()
-            if not ok:
-                logger.warning("Failed to read frame from camera")
-                time.sleep(0.05)
+            # Rate limit inference
+            now = time.perf_counter()
+            if not force_capture and (now - last_inference_time) < min_inference_interval:
+                time.sleep(0.001)
+                continue
+
+            # Get latest frame (non-blocking, returns most recent)
+            frame, frame_time = grabber.get_frame()
+            if frame is None:
+                time.sleep(0.005)
+                continue
+            
+            # Skip if frame is too old (stale data protection)
+            frame_age = now - frame_time
+            if frame_age > 0.5 and not force_capture:  # Skip frames older than 500ms
+                logger.debug("Skipping stale frame (age=%.3fs)", frame_age)
                 continue
 
             detections = pipeline.infer_once(frame)
             ts = time.time()
             publish_detections(pub, detections, ts, request_id=capture_request_id if force_capture else None)
+            
             if force_capture:
                 capture_once = False
                 capture_request_id = None
+            
             frame_counter += 1
+            last_inference_time = now
 
             if args.show:
                 vis = draw_detections(frame.copy(), detections)
@@ -202,7 +318,7 @@ def run():
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
     finally:
-        cap.release()
+        grabber.stop()
         cv2.destroyAllWindows()
 
 

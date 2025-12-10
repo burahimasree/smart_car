@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import zmq
+import zmq.asyncio
 
 
 # Topics (always bytes for consistency)
@@ -29,7 +30,10 @@ TOPIC_DISPLAY_TEXT = b"display.text"    # Text to show on display
 TOPIC_DISPLAY_NAV = b"display.nav"      # Navigation visualization
 
 
-def _ctx() -> zmq.Context:
+def _ctx(async_mode: bool = False) -> zmq.Context:
+    """Get ZMQ context (async or sync)."""
+    if async_mode:
+        return zmq.asyncio.Context.instance()
     return zmq.Context.instance()
 
 
@@ -40,10 +44,25 @@ def _ipc_addrs(config: Dict[str, Any]) -> tuple[str, str]:
     return upstream, downstream
 
 
-def make_publisher(config: Dict[str, Any], *, channel: str = "upstream", bind: bool = False) -> zmq.Socket:
+def make_publisher(
+    config: Dict[str, Any], 
+    *, 
+    channel: str = "upstream", 
+    bind: bool = False,
+    context: Optional[zmq.Context] = None
+) -> zmq.Socket:
+    """Create a PUB socket.
+    
+    Args:
+        config: System configuration dict
+        channel: 'upstream' or 'downstream'
+        bind: If True, bind; otherwise connect
+        context: Optional ZMQ context (for async usage)
+    """
     upstream, downstream = _ipc_addrs(config)
     addr = upstream if channel == "upstream" else downstream
-    sock = _ctx().socket(zmq.PUB)
+    ctx = context or _ctx()
+    sock = ctx.socket(zmq.PUB)
     (sock.bind if bind else sock.connect)(addr)
     return sock
 
@@ -54,14 +73,26 @@ def make_subscriber(
     topic: bytes = b"",
     channel: str = "upstream",
     bind: bool = False,
+    context: Optional[zmq.Context] = None
 ) -> zmq.Socket:
+    """Create a SUB socket.
+    
+    Args:
+        config: System configuration dict
+        topic: Topic to subscribe to (empty = all)
+        channel: 'upstream' or 'downstream'
+        bind: If True, bind; otherwise connect
+        context: Optional ZMQ context (for async usage)
+    """
     upstream, downstream = _ipc_addrs(config)
     addr = upstream if channel == "upstream" else downstream
-    sock = _ctx().socket(zmq.SUB)
+    ctx = context or _ctx()
+    sock = ctx.socket(zmq.SUB)
     sock.setsockopt(zmq.SUBSCRIBE, topic)
     (sock.bind if bind else sock.connect)(addr)
     return sock
 
 
 def publish_json(sock: zmq.Socket, topic: bytes, payload: Dict[str, Any]) -> None:
+    """Publish a JSON payload on a topic."""
     sock.send_multipart([topic, json.dumps(payload).encode("utf-8")])

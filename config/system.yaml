@@ -3,10 +3,19 @@ ipc:
   downstream: ${IPC_DOWNSTREAM:-tcp://127.0.0.1:6011} # orchestrator → modules
 
 audio:
-  # When true, services (wakeword, STT wrapper) will prefer routing
+  # ═══════════════════════════════════════════════════════════════════════════
+  # UNIFIED AUDIO PIPELINE CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+  # When true, use the unified voice pipeline (src/audio/unified_voice_pipeline.py)
+  # which handles wakeword AND STT in a single process with shared mic access.
+  # This eliminates microphone resource conflicts on Raspberry Pi.
+  use_unified_pipeline: true
+  
+  # Legacy mode: when true, services (wakeword, STT wrapper) will prefer routing
   # microphone access via the AudioManager service instead of opening
-  # ALSA/PortAudio directly.
+  # ALSA/PortAudio directly. Only used if use_unified_pipeline is false.
   use_audio_manager: false
+  
   # Central AudioManager control endpoint (ZeroMQ REQ/REP for JSON RPC).
   control_endpoint: tcp://127.0.0.1:6020
   # Optional ALSA device node used by systemd ExecStartPre fuser.
@@ -115,6 +124,8 @@ vision:
   camera_index: 0
   backend: onnx # options: ncnn|onnx
   label_path: ${PROJECT_ROOT}/models/vision/coco_labels.txt
+  # Target FPS for inference (lower = less CPU, higher = more responsive)
+  target_fps: 15
 
 nav:
   uart_device: /dev/ttyAMA0
