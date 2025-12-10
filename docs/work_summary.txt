@@ -1,0 +1,69 @@
+Offline AI Assistant Workspace Summary (updated 2025-11-18)
+================================================================
+
+Overview
+--------
+Built a modular, offline-capable AI assistant scaffold targeting Raspberry Pi 4 (64-bit). The project enforces strict subsystem boundaries (STT, TTS, LLM, Vision, UI, Core, Tools, Tests) with orchestration glue under `src/core`. Heavy model assets stay outside git via an expanded `.gitignore`. Four isolated Python virtual environments (`stte`, `ttse`, `llme`, `visn`) are provisioned at the repository root for per-module dependencies.
+
+Chronological Log
+-----------------
+1. Created `project_root/` with `src/`, `docs/`, `config/`, `logs/`, and `update.txt` (initial timestamp entry: "2025-11-18 00:00 UTC - Initialized offline AI assistant workspace scaffold.").
+2. Added `setup_envs.sh` bash utility to create/manage `stte`, `ttse`, `llme`, `visn` venvs with pip/setuptools/wheel upgrades.
+3. Generated `__init__.py` files for `src`, `src/stt`, `src/tts`, `src/llm`, `src/vision`, `src/ui`, `src/core`, `src/tools`, `src/tests` to ensure Python package structure.
+4. Implemented placeholder engines:
+   - `src/stt/engine.py`: `STTBackend`, `RecognizerConfig`, `SpeechRecognizer` with bootstrap/transcribe logic and stubbed byte counting.
+   - `src/tts/engine.py`: `TTSConfig`, `SpeechSynthesizer` writing textual metadata to WAV placeholder outputs.
+   - `src/llm/llama_wrapper.py`: `LlamaConfig`, `LlamaRunner` verifying llama.cpp binary+model, returning simulated responses.
+   - `src/vision/detector.py` + `src/vision/pipeline.py`: `VisionConfig`, `Detection`, `YOLODetector`, `VisionPipeline` streaming iterator structure.
+   - `src/ui/display_driver.py`: `DisplayConfig`, `WaveshareDisplay` stub with initialize/draw_frame hooks.
+5. Crafted core orchestration files:
+   - `src/core/orchestrator.py`: `OrchestratorConfig`, `OrchestratorState`, `OfflineAssistant` that bootstraps subsystems, logs lifecycle events, and executes `run_once` connecting STT -> LLM -> TTS plus Vision pipeline.
+   - `src/core/logging_setup.py`: Rotating file logger helper (2 MB max, 3 backups) writing under `logs/`.
+   - Enhanced existing `src/core/config_loader.py` with YAML/JSON auto-detection, PyYAML optional import guard, and typed dataclass outputs.
+6. Added developer utilities and tests:
+   - `src/tools/cli.py`: CLI entrypoint accepting `--config`, loading orchestrator config, and bootstrapping modules.
+   - `src/tools/test_discovery.py`: helper returning module metadata for tests.
+   - `src/tests/test_modules.py`: pkgutil-based auto-discovery ensuring each `src/*` module imports as `src.<package>`.
+   - Pre-existing tests (`test_config_loader.py`, `test_orchestrator_stub.py`, etc.) left untouched but compatible with new layout.
+7. Authored configuration + logging templates inside `config/`:
+   - `system.yaml`, `system.local.json`: reference model paths, runtime parameters, log directories for STT, TTS, LLM, Vision, Display.
+   - `logging.yaml`: console + rotating-file handlers (debug-level file output for orchestrator).
+8. Expanded documentation set:
+   - `docs/architecture.md`: describes subsystem boundaries, flow diagram, config/logging/test strategy, deployment notes.
+   - `docs/apis.md`: enumerates key public methods per subsystem.
+   - `docs/modules.md`: condensed responsibilities for each package.
+   - `docs/work_summary.txt`: this detailed ledger of completed actions.
+9. Hardened `.gitignore` for AI workloads (venvs, logs, caches, build outputs, large model formats like *.gguf/*.pt/*.onnx/*.safetensors, archives, `models/`, `datasets/`).
+10. Updated `update.txt` with second diary entry ("2025-11-18 10:00 UTC - Added subsystem modules, configs, docs, tests, and tooling skeletons.").
+11. Refreshed `README.md` to document highlights, folder structure, bootstrap commands, CLI usage, testing workflow, and prioritized next steps.
+12. Provisioned the four venvs by executing `setup_envs.sh` (records show each env created and pip upgraded).
+13. Installed orchestration dependencies (`pyyaml`, `pytest`, with `iniconfig`, `packaging`, `pluggy`, `pygments`) inside `stte` environment via `pip install -r requirements.txt`.
+14. Ran pytest smoke test `src/tests/test_modules.py` inside `stte` venv; run passed (platform linux, Python 3.13.5, pytest 9.0.1).
+
+Key Files and Roles
+-------------------
+- `.gitignore`: central ignore list preventing large models, logs, venvs, and build artifacts from entering git.
+- `setup_envs.sh`: reproducible venv creation script ensuring isolated environments for STT, TTS, LLM, Vision stacks.
+- `requirements.txt`: orchestration-level dependencies (PyYAML, pytest) installed within whichever env runs core/tests.
+- `config/system.yaml` & `config/system.local.json`: authoritative config templates for all subsystem parameters.
+- `config/logging.yaml`: optional logging config referencing rotating file + console handlers.
+- `src/core/orchestrator.py`: heart of the assistant, linking STT->LLM->TTS plus Vision + Display with logging.
+- `src/core/logging_setup.py`: shared rotating logger utility used by orchestrator.
+- `src/stt/engine.py`, `src/tts/engine.py`, `src/llm/llama_wrapper.py`, `src/vision/detector.py`, `src/vision/pipeline.py`, `src/ui/display_driver.py`: subsystem placeholders strictly confined to their modules.
+- `src/tools/cli.py`: developer CLI entrypoint for quick bootstrap tests.
+- `src/tests/test_modules.py`: ensures module packages remain importable as the tree evolves.
+- `docs/architecture.md`, `docs/apis.md`, `docs/modules.md`: documentation bundle outlining architecture, APIs, and module responsibilities.
+- `docs/work_summary.txt`: comprehensive activity record.
+- `update.txt`: chronological change log for quick auditing.
+
+Testing Performed
+-----------------
+- `pytest src/tests/test_modules.py` executed inside the `stte` virtual environment after installing dependencies from `requirements.txt`. Output confirmed collection of 1 test with successful pass (ensures module discovery integrity).
+
+Next Suggested Steps (Not Yet Done)
+-----------------------------------
+- Integrate real Whisper.cpp/Vosk, Piper, llama.cpp, and YOLO binaries, pointing config paths to local checkpoints.
+- Expand orchestrator into a continuous event loop (audio/video streaming, UI rendering, error recovery).
+- Add hardware mocks/tests for each subsystem and extend pytest coverage to remaining suites.
+- Document deployment automation (systemd units, boot scripts) tailored to Raspberry Pi OS 64-bit.
+- Version-control strategy: follow README git instructions (`git init`, `git add .`, `git commit`, `git remote add origin <repo>`, `git push -u origin main`).

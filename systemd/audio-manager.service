@@ -1,0 +1,15 @@
+[Unit]
+Description=AudioManager service (central audio owner)
+After=network.target sound.target
+Before=stt-wrapper.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/project_root
+ExecStartPre=/usr/bin/fuser -k /dev/snd/pcmC3D0c || true
+ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.audio.audio_manager --config config/system.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

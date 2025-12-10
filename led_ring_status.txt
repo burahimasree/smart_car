@@ -1,0 +1,87 @@
+===================================================
+LED Ring Service – Color Mapping & User Guide (.txt)
+===================================================
+
+Overview
+--------
+- **Service module**: `src/piled/led_ring_service.py`
+- **Systemd unit**: `led-status.service`
+- **Virtual environment**: `/home/dev/project_root/.venvs/visn`
+- **Hardware**: 8‑pixel NeoPixel ring wired to GPIO12 (GRB order, same wiring as the standalone `led-test.py`).
+- **Data sources**: Real ZeroMQ topics from the orchestrator (wakeword, STT, LLM, TTS, health, listen start/stop). No simulation shortcuts.
+
+How to Run
+----------
+1. Ensure the `.venvs/visn` environment already has NeoPixel deps (confirmed via `led-test.py`).
+2. Reload systemd when code changes:
+    sudo systemctl daemon-reload
+3. Start or restart the LED service:
+    sudo systemctl restart led-status.service
+4. Monitor logs:
+    journalctl -u led-status.service -f
+
+Manual Debug Command (same environment, bypassing systemd):
+  cd /home/dev/project_root
+  sudo -E env PYTHONPATH=/home/dev/project_root \
+     PROJECT_ROOT=/home/dev/project_root \
+     SYSTEM_CONFIG=config/system.yaml \
+     .venvs/visn/bin/python -m src.piled.led_ring_service
+
+Implementation Highlights
+-------------------------
+- The service instantiates `LedRingHardware` (wrapper around `neopixel.NeoPixel`) and `LedAnimator` (state machine).
+- It subscribes to upstream topics (`ww.detected`, `stt.transcription`, `llm.response`, `tts.speak`, `system.health`) and downstream topics (`cmd.listen.start`, `cmd.listen.stop`, `llm.request`, `tts.speak` text events).
+- Internal flags (`stt_active`, `llm_active`, `tts_active`, `error`) ensure that whichever stage is dominant controls the LEDs.
+- Animations update ~60 times per second; each renderer ensures smooth transitions.
+- Hardware access requires root because rpi_ws281x maps `/dev/mem`.
+
+Color & Pattern Legend
+----------------------
+State transitions flow through the voice pipeline. Each entry below describes the trigger, what you’ll see, and why.
+
+1. **Idle / Baseline**
+  - *Trigger*: No active sessions; the orchestrator last emitted `display.state=idle` or no events yet.
+  - *Pattern*: Soft teal (cyan) breathing – gentle fade in/out, slightly whitish because green+blue mix.
+  - *Meaning*: System ready, healthy heartbeat.
+
+2. **Wakeword Detected**
+  - *Trigger*: `ww.detected` message.
+  - *Pattern*: Amber flash blinking for ~1.2 seconds, then auto-falls back to listening.
+  - *Meaning*: Wakeword hit; orchestrator pausing vision and prepping microphone.
+
+3. **Listening (STT Capture)**
+  - *Trigger*: `cmd.listen.start` downstream event.
+  - *Pattern*: Deep blue spinner (a bright LED travels around ring, trailing fade).
+  - *Meaning*: Microphone is actively recording audio for STT.
+
+4. **Thinking / LLM Pending**
+  - *Trigger*: Either `llm.request` downstream or `stt.transcription` upstream (after STT completes).
+  - *Pattern*: Purple/magenta swirl, sin wave gradients moving across LEDs.
+  - *Meaning*: Transcript handed to the LLM; intention/response is being generated.
+
+5. **TTS Queueing**
+  - *Trigger*: `tts.speak` downstream (text payload) before audio playback starts.
+  - *Pattern*: Lime sweep loader (green-yellow arc moving around ring).
+  - *Meaning*: TTS job accepted; audio output is being prepared. After a short hold, it falls back to speaking state.
+
+6. **Speaking / TTS Active**
+  - *Trigger*: `tts.speak` downstream previously set `tts_active`, and no completion yet.
+  - *Pattern*: Green breathing/pulsing (volume-like expansion).
+  - *Meaning*: Voice response is playing through the speaker.
+
+7. **TTS Complete**
+  - *Trigger*: `tts.speak` upstream event containing `{"done": true}`.
+  - *Pattern*: Automatically fades back to the idle teal breathing pattern.
+  - *Meaning*: Speech playback finished; orchestrator resumes normal idle state.
+
+8. **Health Error**
+  - *Trigger*: `system.health` message with `ok: false`.
+  - *Pattern*: Red strobe (on/off at 2 Hz) overriding all other states until a healthy message arrives.
+  - *Meaning*: Some subsystem reported a fault; LEDs remain red until `system.health` says `ok: true` again.
+
+Design Notes
+------------
+- Animations default back to idle after specific hold windows to avoid stuck colors if events stop.
+- The idle teal can look close to white depending on diffusion; edit `_render_idle` inside `LedAnimator` if you want darker idle hues.
+- Because the service listens to actual orchestrator traffic, you can test each state by publishing the corresponding ZMQ message (no built-in simulator).
+- The LED logic lives under `src/piled` per your request, keeping hardware-specific code separate from UI modules.

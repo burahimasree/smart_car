@@ -1,0 +1,136 @@
+ipc:
+  upstream: ${IPC_UPSTREAM:-tcp://127.0.0.1:6010}   # module → orchestrator
+  downstream: ${IPC_DOWNSTREAM:-tcp://127.0.0.1:6011} # orchestrator → modules
+
+audio:
+  # When true, services (wakeword, STT wrapper) will prefer routing
+  # microphone access via the AudioManager service instead of opening
+  # ALSA/PortAudio directly.
+  use_audio_manager: true
+  # Central AudioManager control endpoint (ZeroMQ REQ/REP for JSON RPC).
+  control_endpoint: tcp://127.0.0.1:6020
+  # Optional ALSA device node used by systemd ExecStartPre fuser.
+  mic_device_node: /dev/snd/pcmC3D0c
+  # Preferred input device name substring (used by future AudioManager
+  # hardware binding).
+  preferred_device_substring: USB Audio
+  # Default hardware sample rate when opening the device. AudioManager
+  # will resample for wakeword/STT clients as needed.
+  hw_sample_rate: 48000
+  # Approximate buffer sizing guidance (milliseconds).
+  hw_buffer_ms: 20
+  wakeword_frame_ms: 30
+  stt_chunk_ms: 500
+
+wakeword:
+  engine: porcupine        # forced porcupine engine
+  # Direct access key from environment variable PV_ACCESS_KEY
+  access_key: ${ENV:PV_ACCESS_KEY}
+  access_key_path: ${HOME}/.config/pi-assistant/pv_access_key
+  sensitivity: 0.75
+  sim_mode: false
+  payload_keyword: "hey genny"
+  payload_variant: "genny"
+  keywords:
+    - hey genny
+    - genny
+    - genney
+    - hi genny
+    - genie
+    - jenni
+  model: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
+  model_paths:
+    porcupine_keyword: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
+    tflite_model: ${PROJECT_ROOT}/models/wakeword/genny.tflite
+  stte_venv: ${PROJECT_ROOT}/.venvs/stte
+  fallback_engine: pytorch
+
+stt:
+  engine: faster_whisper
+  mic_hw: plughw:3,0
+  sample_rate: 16000
+  language: en
+  silence_threshold: 0.35
+  silence_duration_ms: 900
+  max_capture_seconds: 15
+  min_confidence: 0.5  # Added: gate low-confidence transcripts
+  runner_venv: ${PROJECT_ROOT}/.venvs/stte/bin/python
+  # When true, orchestrator drives STT via the wrapper service and
+  # AudioManager instead of spawning the legacy process-level STT
+  # runners directly.
+  use_wrapper: true
+  # Safety timeout in seconds for a single listen session; if exceeded,
+  # orchestrator cancels listening and resumes vision.
+  timeout_seconds: 15
+  engines:
+    faster_whisper:
+      model: tiny.en
+      compute_type: int8       # good default for Raspberry Pi CPU
+      device: cpu              # cpu|cuda|auto
+      beam_size: 1             # speed over accuracy by default
+      download_root: ${PROJECT_ROOT}/third_party/whisper-fast
+    whispercpp:
+      model_path: ${PROJECT_ROOT}/models/whisper/ggml-small.en-q5_1.bin
+      bin_path: ${PROJECT_ROOT}/third_party/whisper.cpp/build/bin/whisper-cli
+    azure_speech:
+      region: ${ENV:AZURE_SPEECH_REGION}
+      endpoint: ${ENV:AZURE_SPEECH_ENDPOINT}
+      language: en-US
+      mic_device: default
+      min_confidence: 0.5
+    azure_speech:
+      key: ${ENV:AZURE_SPEECH_KEY}
+      region: ${ENV:AZURE_SPEECH_REGION}
+      endpoint: ${ENV:AZURE_SPEECH_ENDPOINT}
+      language: en-US
+      mic_device: default
+
+tts:
+  voice: en-us-amy-medium
+  model_path: ${PROJECT_ROOT}/models/piper/en_US-amy-medium.onnx
+  sample_rate: 22050
+  noise_scale: 0.6
+  length_scale: 1.0
+  bin_path: ${PROJECT_ROOT}/.venvs/ttse/bin/piper
+  playback: aplay
+
+llm:
+  engine: llama.cpp
+  model_path: ${PROJECT_ROOT}/models/llm/tinyllama-1.1b-chat.Q4_K_M.gguf
+  host: 127.0.0.1
+  port: 8080
+  max_context: 2048
+  threads: 4
+  gpu_layers: 0
+  server_bin: ${PROJECT_ROOT}/third_party/llama.cpp/bin/llama-server
+
+vision:
+  model_path_onnx: ${PROJECT_ROOT}/models/vision/yolo11n.onnx
+  model_path_ncnn_param: ${PROJECT_ROOT}/models/vision/yolo11n.param
+  model_path_ncnn_bin: ${PROJECT_ROOT}/models/vision/yolo11n.bin
+  input_size: [640, 640]
+  confidence: 0.25
+  iou: 0.45
+  camera_index: 0
+  backend: onnx # options: ncnn|onnx
+  label_path: ${PROJECT_ROOT}/models/vision/coco_labels.txt
+
+nav:
+  uart_device: /dev/ttyAMA0
+  baud_rate: 115200
+  timeout: 1.0
+  commands:
+    forward: "FWD"
+    backward: "BWD"
+    left: "LEFT"
+    right: "RIGHT"
+    stop: "STOP"
+
+display:
+  resolution: [480, 320]
+  rotation: 90
+  spi_bus: 0
+  spi_device: 0
+
+logs:
+  directory: ./logs

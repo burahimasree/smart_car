@@ -1,0 +1,388 @@
+Offline Raspberry Pi Assistant – Full Project Status and Architecture
+=====================================================================
+
+1. High-Level Goal
+-------------------
+
+We are building an offline (or mostly-offline) voice-controlled robotic assistant running on a Raspberry Pi. The system should:
+
+- Listen continuously for a wake word without blocking or crashing.
+- After the wake word, capture a speech query, transcribe it (STT), interpret it (LLM), optionally trigger navigation or other actions, and reply with synthesized speech (TTS).
+- Use an on-device vision stack to understand the environment and feed that context into the LLM and navigation.
+- Communicate with a microcontroller (ESP32 or similar) over UART for low-level safety and motion control.
+- Be robust as a long-running service suite (systemd, logs, health, predictable failure modes), with minimal human babysitting.
+
+Everything is glued together by a central orchestrator process and a PUB/SUB message bus based on ZeroMQ.
+
+
+2. Current Core Architecture
+-----------------------------
+
+### 2.1 Process Topology
+
+The system is structured as a set of cooperating processes (or modules), each with a clear responsibility:
+
+- Orchestrator (src/core/orchestrator.py)
+  - Central event router and state machine.
+  - Listens to upstream events: wakeword, STT, LLM responses, TTS completion, vision, UART.
+  - Publishes downstream commands: start/stop STT listening, pause/resume vision, send TTS text, navigation commands.
+
+- Wakeword Service (src/wakeword/porcupine_runner.py)
+  - Listens on the microphone using Porcupine (or a fallback energy detector).
+  - On wake word detection, publishes a ww.detected event.
+  - Has a simulation mode and a WAV test path.
+
+- STT Service(s) (src/stt)
+  - whisper_runner.py, faster_whisper_runner.py, and possibly Azure or cloud STT later.
+  - Capture short audio windows after wakeword and publish transcriptions on the upstream bus.
+
+- LLM Service (src/llm)
+  - Supervises llama.cpp-based models and/or hybrid cloud clients.
+  - Receives transcription text, produces a JSON-structured response with intent, slots, and text to speak.
+
+- TTS Service (src/tts/piper_runner.py)
+  - Subscribes to TTS requests from the orchestrator.
+  - Synthesizes audio (Piper or stub) and then publishes a completion event.
+
+- Vision Service (src/vision)
+  - Runs object detection on the camera feed.
+  - Publishes detections and accepts pause/resume commands so it can yield CPU during conversations.
+
+- UART / Navigation (src/uart)
+  - Bridges high-level navigation intents from the orchestrator into low-level serial commands to a motor controller.
+  - Includes a simulator for development.
+
+- UI / Display (src/ui)
+  - Provides a display / status UI on the Pi’s screen (TFT / HDMI) in coordination with the rest of the stack.
+
+All of these are wired together using configuration and logging helpers in src/core.
+
+
+### 2.2 IPC and Topics
+
+- Transport: ZeroMQ PUB/SUB (and in some new components, REQ/REP for control).
+- Two logical channels:
+  - Upstream: workers → orchestrator (events).
+  - Downstream: orchestrator → workers (commands).
+
+Key topics (names simplified for explanation):
+
+- ww.detected – emitted by wakeword service when the wakeword fires.
+- cmd.listen.start / cmd.listen.stop – sent by orchestrator to start/stop STT listening.
+- stt.transcription – STT result payloads sent upstream from STT services.
+- llm.request / llm.response – orchestrator → LLM and LLM → orchestrator messages.
+- tts.speak / tts.done – orchestrator → TTS and TTS → orchestrator.
+- visn.object – vision detections.
+- nav.cmd – navigation commands to UART.
+- cmd.pause_vision – orchestrator telling vision to pause/resume.
+
+The orchestrator’s logic is essentially:
+
+1. Receive ww.detected.
+   - Pause vision immediately.
+   - Send cmd.listen.start.
+   - Start STT session via STTEngine abstraction.
+
+2. Receive stt.transcription.
+   - Check for non-empty text and minimum confidence.
+   - If invalid/empty: stop STT, resume vision, send cmd.listen.stop.
+   - If valid: send llm.request with the recognized text. Stop STT for this turn and send cmd.listen.stop.
+
+3. Receive llm.response.
+   - Extract intent, slots, and text to speak.
+   - If there is a navigation intent, send nav.cmd to UART.
+   - If there is text to speak, send TTS request and mark TTS pending. Otherwise resume vision directly.
+
+4. Receive TTS completion.
+   - When TTS reports done, resume vision.
+
+5. Receive vision events.
+   - Cache the last detection to use as context for navigation decisions.
+
+
+### 2.3 Configuration and Logging
+
+- Central config file: config/system.yaml.
+  - Defines IPC endpoints, wakeword / STT / TTS / LLM / vision settings, model paths, log directory, etc.
+  - Supports environment variable interpolation and project-root placeholders.
+
+- Logging:
+  - Centralized setup in src/core/logging_setup.py.
+  - Per-service log files under logs/ with rotation.
+
+- Multiple virtual environments (venvs) to isolate heavy dependencies:
+  - .venvs/stte (wakeword + STT)
+  - .venvs/ttse (TTS)
+  - .venvs/llme (LLM)
+  - .venvs/visn (vision)
+  - .venvs/core (orchestrator / tools / tests)
+  - .venvs/dise (display)
+
+
+3. Audio Path and the AudioManager Refactor
+-------------------------------------------
+
+### 3.1 The Problem with the Current Audio Path
+
+Currently, audio capture is done directly in individual components:
+
+- Wakeword opens the microphone via PyAudio/ALSA.
+- STT runners invoke arecord, whisper.cpp, or faster-whisper, often assuming they can control the mic lifecycle.
+
+This creates issues:
+
+- Only one process can safely own the mic at a time. If multiple services try to open ALSA, the system becomes fragile.
+- There is no single place to control audio quality, sample rate, buffering, and device selection.
+- The orchestrator cannot easily enforce policies like timeouts, prioritization, or dynamic routing between local and cloud STT.
+
+
+### 3.2 Target Audio Architecture
+
+To fix this, we are introducing a dedicated AudioManager service that:
+
+- Owns the ALSA capture device exclusively.
+- Provides "sessions" to clients (wakeword, STT wrapper) over a control protocol (ZeroMQ REQ/REP).
+- Handles buffering, basic resampling, and routing.
+- Publishes health/heartbeat messages so orchestrator and tools can monitor it.
+
+The design:
+
+- AudioManager (new service under src/audio/audio_manager.py)
+  - Binds a control endpoint (e.g., tcp://127.0.0.1:6020) specified in config.system.yaml under audio.control_endpoint.
+  - Accepts JSON commands like:
+    - {"action": "start_session", ...}
+    - {"action": "stop_session", ...}
+    - {"action": "read_chunk", ...}
+    - {"action": "health"}
+  - Tracks active sessions in memory with metadata (mode, target rate, max duration, priority).
+  - Publishes health status on the upstream bus.
+
+- Wakeword client (Porcupine runner)
+  - For now: still uses direct ALSA but knows when AudioManager is preferred.
+  - In future: will request a low-latency audio stream from AudioManager for continuous wakeword detection.
+
+- STT wrapper service (planned under src/stt/stt_wrapper_runner.py)
+  - Receives cmd.listen.start/stop commands from orchestrator.
+  - Requests a bounded session from AudioManager, reads a fixed duration of audio, and then routes it through a local STT model or a cloud STT provider.
+  - Publishes a normalized STT result to the upstream bus.
+
+This turns "raw ALSA everywhere" into a single well-defined interface for audio capture, simplifying resource management and safety.
+
+
+### 3.3 Current State of AudioManager Work
+
+Already implemented:
+
+- Config additions:
+  - Added an audio block in config/system.yaml with fields like:
+    - use_audio_manager – feature flag to turn AudioManager-based flow on/off.
+    - control_endpoint – where the AudioManager REQ/REP control socket binds.
+    - Mic device hints and buffer/rate suggestions.
+
+- AudioManager skeleton:
+  - New module src/audio/audio_manager.py.
+  - Loads configuration, sets up logging, and binds a ZeroMQ REP socket on the configured control_endpoint.
+  - Defines an in-memory AudioSession structure and basic operations:
+    - start_session – register a new session in memory.
+    - stop_session – remove a session.
+    - read_chunk – currently returns zero-filled PCM buffers to exercise the protocol without needing hardware.
+  - Main loop:
+    - Polls the control socket, decodes JSON requests, dispatches to handlers, and replies with JSON.
+    - Periodically publishes a health message with session count.
+
+- Wakeword integration (non-invasive):
+  - porcupine_runner.py now reads the audio.use_audio_manager flag and supports a --use-audio-manager CLI option.
+  - If enabled, it logs that AudioManager preference is on but, for now, still opens ALSA directly.
+  - Simulation and existing behaviors remain unchanged.
+
+- Test coverage:
+  - A basic unit test instantiates AudioManager with the system config, starts and stops a session, and asserts success.
+  - The full test suite (including this new test) passes.
+
+Not yet implemented (planned next steps):
+
+- Wakeword actually sourcing audio from AudioManager instead of its own PyAudio stream.
+- STT wrapper runner that talks to AudioManager, chooses between local and cloud STT, and publishes results.
+- Integration of AudioManager health/timeouts into orchestrator decisions.
+
+
+4. Component-by-Component Status
+---------------------------------
+
+This section summarizes where each major subsystem stands, including the new AudioManager work.
+
+### 4.1 Core / Orchestrator
+
+- Orchestrator (src/core/orchestrator.py):
+  - Fully implemented and used as the central event router.
+  - Knows how to start and stop STT via the STTEngine abstraction.
+  - Handles wakeword events, STT results, LLM responses, TTS completion, and vision pause/resume.
+  - Current implementation still uses the legacy STT engine directly, not the future STT wrapper.
+
+Status: Stable and passing tests; not yet updated to use AudioManager or STT wrapper.
+
+
+### 4.2 Wakeword
+
+- Porcupine Runner (src/wakeword/porcupine_runner.py):
+  - Supports real Porcupine detection with a .ppn keyword model and access key.
+  - Has a WAV test mode for offline audio files.
+  - Has a simulation mode to emit one ww.detected event and exit.
+  - Implements a fallback energy-based detector if Porcupine is unavailable.
+  - Now reads the audio.use_audio_manager flag and a --use-audio-manager CLI option:
+    - If true, logs that AudioManager is preferred (skeleton mode).
+    - Behavior otherwise unchanged; still opens ALSA directly.
+
+Status: Production-ready in the existing architecture; partially aware of AudioManager, but not yet consuming audio from it.
+
+
+### 4.3 STT
+
+- Existing STT runners (src/stt):
+  - whisper_runner.py and siblings implement STT by interacting directly with ALSA or external binaries.
+  - They publish normalized STT payloads to the upstream bus.
+
+- STT wrapper (planned):
+  - A new runner (src/stt/stt_wrapper_runner.py) will:
+    - Subscribe to cmd.listen.start/stop.
+    - Talk to AudioManager for audio sessions.
+    - Choose local vs cloud STT based on config or runtime policy.
+    - Publish STT results in the same format the orchestrator already expects.
+
+Status: Legacy STT path fully functional; STT wrapper and its AudioManager integration are not yet implemented (only a simulation-oriented skeleton has been started in previous work).
+
+
+### 4.4 LLM
+
+- LLM Runner and Server (src/llm):
+  - Manage llama.cpp-based models for offline inference.
+  - Provide an HTTP-style or subprocess interface for completions.
+  - Perform simple intent extraction and return structured JSON with fields like intent, slots, and speak.
+
+Status: Implemented and integrated with orchestrator. Startup latency and model loading times are known constraints, but basic functionality is present and covered by tests.
+
+
+### 4.5 TTS
+
+- Piper Runner (src/tts/piper_runner.py):
+  - Integrates with Piper TTS when binaries and models are installed.
+  - Subscribes to TTS requests and publishes completion events.
+  - For development, a stub implementation can be used to simulate done events.
+
+Status: Code path exists; real Piper binary/model installation is a remaining step for full production-quality speech output. Stubs allow the rest of the system to be exercised.
+
+
+### 4.6 Vision
+
+- Vision Runner (src/vision):
+  - Uses YOLO-based models (ONNX/NCNN) to detect objects from the camera.
+  - Publishes detections upstream and listens for pause/resume commands from the orchestrator.
+
+Status: Implementation in place; requires model downloads and camera configuration to fully exercise on hardware.
+
+
+### 4.7 UART / Navigation
+
+- UART Bridge and Simulator (src/uart):
+  - Bridge converts navigation intents into serial commands.
+  - Simulator allows testing without hardware by providing a TCP endpoint.
+
+Status: Implemented and integrated with orchestrator navigation messages.
+
+
+### 4.8 UI / Monitoring
+
+- Display / UI modules (src/ui):
+  - Provide UI integration for a Pi display, though some parts are still in-progress or stubbed.
+
+- New monitoring tools (planned/started):
+  - A small Tk-based monitor and backend scripts have been started to subscribe to health messages and visualize component status. These are still in a primitive state and will be fleshed out as AudioManager and other health signals stabilize.
+
+Status: Basic structure present; detailed UI and monitoring flows are still evolving.
+
+
+5. Testing and Validation
+--------------------------
+
+- Test suite (src/tests):
+  - Covers configuration loading, IPC helper behavior, orchestrator flows, and some simulation paths for wakeword and STT.
+  - Recently extended with a simple AudioManager test (session start/stop) to ensure the skeleton doesn’t regress core behavior.
+
+- Current state:
+  - All tests, including the new AudioManager test, are passing in the STT/core venv.
+
+- Additional run-tests scripts:
+  - Various scripts under run-tests/ and scripts/ help run end-to-end or component-level smoke tests (LLM, wakeword to STT, etc.).
+
+
+6. Systemd and Operations
+-------------------------
+
+- Existing systemd units:
+  - There are service files under systemd/ for core components (orchestrator, wakeword, STT, TTS, LLM, vision, UART, display), enabling auto-start at boot.
+
+- New / planned units:
+  - AudioManager service unit file has been created to run src.audio.audio_manager in the appropriate venv, with ExecStartPre hooks to free ALSA if needed and automatic restart on failure.
+  - A future STT wrapper service will be added and integrated into the systemd tree, ordered after AudioManager and before orchestrator.
+
+- Operational goals:
+  - Make every service restartable and resilient.
+  - Ensure logs are always written with enough detail for field debugging.
+  - Provide simple scripts (e.g., scripts/run.sh) for local developer startup.
+
+
+7. Where We Are Right Now
+--------------------------
+
+Summarizing the current position relative to the overall goal:
+
+- Core orchestrator and IPC system: **implemented and stable**.
+- Wakeword (Porcupine + fallback): **implemented and stable**, now with awareness of the future AudioManager via config flags but still using direct ALSA.
+- STT: **implemented via existing runners**; AudioManager-aware STT wrapper is **not yet fully implemented**.
+- LLM: **implemented and integrated**, with known model-loading latency but working end-to-end.
+- TTS: **code in place**, real voice synthesis depends on Piper binaries/models; stubs allow orchestration logic to be exercised.
+- Vision: **code in place**, pending model downloads and hardware validation.
+- UART / navigation: **implemented and integrated**.
+- AudioManager: **skeleton implemented, config and basic control plane done**, but not yet the sole owner of ALSA or the real audio provider for wakeword/STT.
+- Monitoring/UI: **basic structure exists**, but detailed monitoring and control tools (Tk UI, status dashboards) are still early.
+
+In practical terms:
+
+- You can already run the existing stack end-to-end using the legacy audio flow (wakeword and STT opening ALSA themselves) for an offline assistant demo (subject to TTS/vision model availability).
+- The new AudioManager and STT wrapper architecture is partially in place but intentionally gated behind configuration (audio.use_audio_manager and sim-only code paths) so it does not destabilize the working path.
+
+
+8. Next Steps (Roadmap)
+------------------------
+
+Immediate, high-value next steps:
+
+1. Finish AudioManager integration:
+   - Implement real ALSA capture and buffering inside AudioManager.
+   - Switch wakeword runner to draw audio from AudioManager when audio.use_audio_manager is true.
+   - Implement the STT wrapper runner to request audio sessions from AudioManager and feed local/cloud STT engines.
+
+2. Orchestrator upgrades:
+   - Update orchestrator to drive STT via the new wrapper (instead of the legacy STTEngine) when AudioManager is enabled.
+   - Add timeouts and failure handling based on AudioManager health.
+
+3. TTS and vision hardening:
+   - Install and configure Piper TTS with at least one stable voice.
+   - Download and configure vision models, and validate pause/resume behavior under load.
+
+4. Monitoring and tooling:
+   - Flesh out the Tk monitor and backend to surface health events from AudioManager, STT, LLM, TTS, vision, and UART.
+   - Add simple commands for starting/stopping/restarting services from the UI (with appropriate safety/privilege checks).
+
+5. Deployment and documentation:
+   - Finalize systemd units with correct ordering (AudioManager and STT wrapper first, orchestrator next, then others).
+   - Update quick-start and troubleshooting docs to reflect the AudioManager-centric architecture.
+
+Once these steps are complete, the system will have:
+
+- A single authoritative owner of the microphone (AudioManager).
+- A deterministic, monitored audio pipeline for wakeword and STT.
+- Robust orchestration that can timeout, cancel, and recover from audio/LLM/TTS issues.
+- Clear, testable contracts at each boundary (wakeword, STT wrapper, LLM, TTS, vision, UART).
+
+This TXT file is meant as a high-level, human-readable snapshot of the architecture, goals, and current status. As implementation progresses (especially on AudioManager, STT wrapper, and orchestrator updates), this document can be updated to track what changed and what remains.

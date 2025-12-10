@@ -1,0 +1,418 @@
+================================================================================
+        OFFLINE RASPBERRY PI AI ASSISTANT - PROJECT CODE REPORT
+================================================================================
+Project: Voice-Controlled Robotic Assistant with Vision
+Platform: Raspberry Pi 4
+Language: Python 3.11+
+Architecture: Event-Driven Microservices with ZeroMQ IPC
+
+================================================================================
+                    1. CORE IPC ARCHITECTURE (ZeroMQ)
+================================================================================
+# File: src/core/ipc.py
+# Purpose: Inter-process communication backbone using ZeroMQ PUB/SUB
+
+import json
+import os
+import zmq
+
+# Topic Constants for Event-Driven Messaging
+TOPIC_WW_DETECTED = b"ww.detected"          # Wakeword trigger
+TOPIC_STT = b"stt.transcription"            # Speech-to-text result
+TOPIC_LLM_REQ = b"llm.request"              # LLM query request
+TOPIC_LLM_RESP = b"llm.response"            # LLM response
+TOPIC_TTS = b"tts.speak"                    # Text-to-speech command
+TOPIC_VISN = b"visn.object"                 # Vision detection
+TOPIC_NAV = b"nav.command"                  # Navigation command
+
+def make_publisher(config, channel="upstream", bind=False):
+    """Create ZeroMQ PUB socket for broadcasting events."""
+    addr = config["ipc"][channel]
+    sock = zmq.Context.instance().socket(zmq.PUB)
+    (sock.bind if bind else sock.connect)(addr)
+    return sock
+
+def publish_json(sock, topic, payload):
+    """Publish JSON payload to specified topic."""
+    sock.send_multipart([topic, json.dumps(payload).encode("utf-8")])
+
+
+================================================================================
+                2. SPEECH-TO-TEXT (Whisper.cpp - Offline)
+================================================================================
+# File: src/stt/whisper_runner.py
+# Purpose: Audio capture via ALSA and transcription using Whisper.cpp
+
+import subprocess
+import struct
+import math
+import time
+
+def calc_rms(chunk):
+    """Calculate RMS energy level for voice activity detection."""
+    sample_count = len(chunk) // 2
+    if sample_count == 0:
+        return 0.0
+    samples = struct.unpack(f"<{sample_count}h", chunk[:sample_count * 2])
+    energy = sum(s * s for s in samples) / sample_count
+    return min(1.0, math.sqrt(energy) / 32768.0)
+
+def capture_audio(mic, sample_rate, silence_threshold, silence_duration_ms, max_seconds):
+    """Capture audio from ALSA microphone with voice activity detection."""
+    cmd = ["arecord", "-q", "-D", mic, "-f", "S16_LE", "-c", "1", 
+           "-r", str(sample_rate), "-t", "raw"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    buffer = bytearray()
+    voice_detected = False
+    last_voice = None
+    
+    while True:
+        chunk = proc.stdout.read(int(sample_rate * 0.2) * 2)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        rms = calc_rms(chunk)
+        
+        if rms >= silence_threshold:
+            voice_detected = True
+            last_voice = time.monotonic()
+        if voice_detected and (time.monotonic() - last_voice) >= silence_duration_ms/1000:
+            break  # Silence detected, stop capture
+    
+    proc.terminate()
+    return bytes(buffer)
+
+def run_whisper(bin_path, model_path, wav_path, language):
+    """Execute whisper.cpp binary for transcription."""
+    cmd = [str(bin_path), "-m", str(model_path), "-f", str(wav_path),
+           "-l", language, "-oj", "--no-prints"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    return json.loads(Path(f"{wav_path}.json").read_text())
+
+
+================================================================================
+            3. MICROSOFT AZURE SPEECH-TO-TEXT (Cloud Integration)
+================================================================================
+# File: src/stt/azure_stt.py
+# Purpose: Cloud-based STT using Microsoft Azure Cognitive Services
+# Requires: pip install azure-cognitiveservices-speech
+
+import azure.cognitiveservices.speech as speechsdk
+import json
+import time
+
+class AzureSTTRunner:
+    """Azure Speech-to-Text integration for cloud-based transcription."""
+    
+    def __init__(self, subscription_key, region, language="en-US"):
+        self.speech_config = speechsdk.SpeechConfig(
+            subscription=subscription_key,
+            region=region
+        )
+        self.speech_config.speech_recognition_language = language
+        self.audio_config = speechsdk.AudioConfig(use_default_microphone=True)
+        
+    def recognize_once(self):
+        """Perform single-shot speech recognition."""
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=self.speech_config,
+            audio_config=self.audio_config
+        )
+        result = recognizer.recognize_once_async().get()
+        
+        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            return {
+                "timestamp": int(time.time()),
+                "text": result.text,
+                "confidence": 0.95,
+                "language": self.speech_config.speech_recognition_language
+            }
+        elif result.reason == speechsdk.ResultReason.NoMatch:
+            return {"text": "", "error": "No speech recognized"}
+        return {"text": "", "error": result.reason}
+
+    def start_continuous(self, callback):
+        """Start continuous recognition with callback for results."""
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=self.speech_config,
+            audio_config=self.audio_config
+        )
+        recognizer.recognized.connect(lambda evt: callback({
+            "text": evt.result.text,
+            "timestamp": int(time.time())
+        }))
+        recognizer.start_continuous_recognition()
+        return recognizer
+
+
+================================================================================
+                    4. LLM INTEGRATION (llama.cpp)
+================================================================================
+# File: src/llm/llm_runner.py
+# Purpose: Bridge ZeroMQ requests to llama.cpp HTTP server
+
+import http.client
+import json
+
+class LLMRunner:
+    def __init__(self, host="127.0.0.1", port=8080, max_predict=256):
+        self.host = host
+        self.port = port
+        self.max_predict = max_predict
+
+    def _format_prompt(self, user_prompt):
+        """Wrap user text in instruction format for chat models."""
+        sys_instr = "You are an offline assistant. Answer concisely."
+        return f"[INST] <<SYS>>{sys_instr}<</SYS>>\nUser: {user_prompt}\n[/INST]"
+
+    def _call_llama_server(self, prompt):
+        """Send HTTP completion request to llama-server."""
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=120)
+        body = json.dumps({
+            "prompt": prompt,
+            "n_predict": self.max_predict,
+            "stream": False,
+            "cache_prompt": True
+        })
+        conn.request("POST", "/completion", body=body,
+                     headers={"Content-Type": "application/json"})
+        response = conn.getresponse()
+        data = json.loads(response.read())
+        conn.close()
+        return data.get("content", "").strip()
+
+    def process_request(self, text):
+        """Process user request and return LLM response."""
+        formatted = self._format_prompt(text)
+        response_text = self._call_llama_server(formatted)
+        return {"text": response_text, "timestamp": int(time.time())}
+
+
+================================================================================
+                    5. TEXT-TO-SPEECH (Piper TTS)
+================================================================================
+# File: src/tts/piper_runner.py
+# Purpose: Neural TTS using Piper with ALSA audio output
+
+import subprocess
+import shlex
+import json
+import time
+from src.core.ipc import make_subscriber, make_publisher, publish_json, TOPIC_TTS
+
+def run_tts_service(config):
+    """Main TTS service loop - subscribes to TTS requests."""
+    bin_path = config["tts"]["bin_path"]      # /usr/local/bin/piper
+    model_path = config["tts"]["model_path"]  # .onnx voice model
+    
+    sub = make_subscriber(config, topic=TOPIC_TTS, channel="downstream")
+    pub = make_publisher(config, channel="upstream")
+    
+    while True:
+        topic, data = sub.recv_multipart()
+        msg = json.loads(data)
+        text = msg["text"].strip()
+        
+        if not text:
+            continue
+            
+        # Pipe text through Piper TTS to aplay for audio output
+        cmd = f"{shlex.quote(bin_path)} -m {shlex.quote(model_path)} -f -"
+        with subprocess.Popen(shlex.split(cmd), 
+                              stdin=subprocess.PIPE, 
+                              stdout=subprocess.PIPE) as piper:
+            piper.stdin.write(text.encode("utf-8"))
+            piper.stdin.close()
+            # Play audio via ALSA
+            subprocess.Popen(["aplay", "-q", "-f", "cd"], stdin=piper.stdout)
+            piper.wait()
+        
+        # Notify orchestrator that TTS playback completed
+        publish_json(pub, TOPIC_TTS, {"done": True, "timestamp": int(time.time())})
+
+
+================================================================================
+                    6. VISION / OBJECT DETECTION (YOLO)
+================================================================================
+# File: src/vision/vision_runner.py
+# Purpose: Real-time object detection using YOLO ONNX model
+
+import cv2
+import numpy as np
+import time
+from src.core.ipc import TOPIC_VISN, make_publisher, publish_json
+
+def publish_detections(pub_sock, detections, ts):
+    """Publish each detection as a separate IPC message."""
+    for det in detections:
+        payload = {
+            "label": det.label,
+            "bbox": list(det.bbox),  # [x1, y1, x2, y2]
+            "confidence": det.confidence,
+            "ts": ts
+        }
+        publish_json(pub_sock, TOPIC_VISN, payload)
+
+def run_vision_loop(config, camera_index=0):
+    """Main vision processing loop with camera capture."""
+    pub = make_publisher(config, channel="upstream")
+    cap = cv2.VideoCapture(camera_index)
+    pipeline = VisionPipeline(config["vision"])  # YOLO ONNX detector
+    
+    paused = False
+    while True:
+        if paused:
+            time.sleep(0.05)
+            continue
+            
+        ok, frame = cap.read()
+        if not ok:
+            continue
+            
+        detections = pipeline.infer_once(frame)  # Run YOLO inference
+        publish_detections(pub, detections, time.time())
+    
+    cap.release()
+
+
+================================================================================
+                    7. WAKEWORD DETECTION (Porcupine)
+================================================================================
+# File: src/wakeword/porcupine_runner.py
+# Purpose: Activate assistant with voice trigger "Hey Genny"
+
+import pvporcupine
+import pyaudio
+import time
+from src.core.ipc import TOPIC_WW_DETECTED, make_publisher, publish_json
+
+def publish_detected(pub, score, source):
+    """Publish wakeword detection event."""
+    payload = {
+        "timestamp": int(time.time()),
+        "keyword": "genny",
+        "confidence": float(score),
+        "source": source
+    }
+    publish_json(pub, TOPIC_WW_DETECTED, payload)
+
+def run_wakeword_detector(config, access_key, model_path):
+    """Main wakeword detection loop using Porcupine."""
+    pub = make_publisher(config, channel="upstream")
+    
+    # Initialize Porcupine wakeword engine
+    detector = pvporcupine.create(
+        access_key=access_key,
+        keyword_paths=[str(model_path)],
+        sensitivities=[0.6]
+    )
+    
+    # Setup audio input stream
+    pa = pyaudio.PyAudio()
+    stream = pa.open(
+        rate=detector.sample_rate,
+        channels=1,
+        format=pyaudio.paInt16,
+        input=True,
+        frames_per_buffer=detector.frame_length
+    )
+    
+    print("Listening for wakeword...")
+    while True:
+        pcm = stream.read(detector.frame_length)
+        result = detector.process(pcm)
+        if result >= 0:  # Wakeword detected
+            publish_detected(pub, 0.99, "porcupine")
+    
+    stream.close()
+    detector.delete()
+
+
+================================================================================
+                    8. ORCHESTRATOR (State Machine)
+================================================================================
+# File: src/core/orchestrator.py
+# Purpose: Central coordinator wiring Wakeword → STT → LLM → TTS → Vision
+
+class Orchestrator:
+    def __init__(self):
+        self.config = load_config("config/system.yaml")
+        self.cmd_pub = make_publisher(self.config, channel="downstream", bind=True)
+        self.events_sub = make_subscriber(self.config, channel="upstream", bind=True)
+        self.state = {"vision_paused": False, "stt_active": False}
+
+    def on_wakeword(self, payload):
+        """Handle wakeword detection - pause vision, start listening."""
+        self._send_pause_vision(True)
+        self._start_stt()
+
+    def on_stt(self, payload):
+        """Handle STT result - forward to LLM for processing."""
+        text = payload.get("text", "").strip()
+        if text:
+            publish_json(self.cmd_pub, TOPIC_LLM_REQ, {"text": text})
+        self._stop_stt()
+
+    def on_llm(self, payload):
+        """Handle LLM response - extract intent and speak response."""
+        speak = payload.get("text", "")
+        direction = self._extract_nav(payload)  # Check for navigation intent
+        if direction:
+            self._send_nav(direction)
+        if speak:
+            self._send_tts(speak)
+        else:
+            self._send_pause_vision(False)  # Resume vision if no TTS
+
+    def on_tts(self, payload):
+        """Handle TTS completion - resume vision processing."""
+        if payload.get("done"):
+            self._send_pause_vision(False)
+
+    def run(self):
+        """Main event loop dispatching to handlers."""
+        while True:
+            topic, data = self.events_sub.recv_multipart()
+            payload = json.loads(data)
+            if topic == TOPIC_WW_DETECTED:   self.on_wakeword(payload)
+            elif topic == TOPIC_STT:         self.on_stt(payload)
+            elif topic == TOPIC_LLM_RESP:    self.on_llm(payload)
+            elif topic == TOPIC_TTS:         self.on_tts(payload)
+
+
+================================================================================
+                        SYSTEM ARCHITECTURE DIAGRAM
+================================================================================
+
+    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+    │  Wakeword   │────▶│     STT     │────▶│     LLM     │
+    │ (Porcupine) │     │  (Whisper/  │     │ (TinyLlama) │
+    │             │     │   Azure)    │     │             │
+    └─────────────┘     └─────────────┘     └──────┬──────┘
+                                                   │
+    ┌─────────────┐                                ▼
+    │   Vision    │◀───────────────────────┌──────────────┐
+    │   (YOLO)    │                        │ Orchestrator │
+    └─────────────┘                        │ (ZeroMQ Hub) │
+                                           └──────┬───────┘
+    ┌─────────────┐                               │
+    │    UART     │◀──────────────────────────────┤
+    │   (ESP32)   │                               ▼
+    └─────────────┘                        ┌─────────────┐
+                                           │     TTS     │
+                                           │   (Piper)   │
+                                           └─────────────┘
+
+================================================================================
+                            DEPENDENCIES
+================================================================================
+Core:       pyzmq, pyyaml, pytest
+STT:        pvporcupine, faster-whisper, webrtcvad, numpy
+            azure-cognitiveservices-speech (for Azure STT)
+TTS:        piper-tts, numpy
+LLM:        huggingface-hub, numpy
+Vision:     opencv-python, onnxruntime, numpy
+
+================================================================================
+                            END OF REPORT
+================================================================================

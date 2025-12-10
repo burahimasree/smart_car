@@ -1,0 +1,90 @@
+Vision + Camera Pipeline Notes (Raspberry Pi 4, 5MP OV5647)
+Last updated: 2025-12-10
+
+Hardware & OS Context
+- Board: Raspberry Pi 4 Model B (4GB) running Raspberry Pi OS (64-bit).
+- Camera: Official 5 MP OV5647 module on CSI connector. Verified via libcamera detection logs.
+- GPU drivers: VC4; no /sys/class/drm/card1 vendor entry, so ONNX Runtime falls back to CPU.
+
+Python Environments
+1. Legacy `.venvs/visn` (Python 3.11) cannot import Picamera2 because `/usr/lib/python3/dist-packages/libcamera/_libcamera.cpython-313-*.so` targets CPython 3.13.
+2. Created `.venvs/visn-py313` to match the system Picamera2 build and still inherit site packages:
+   ```
+   python3.13 -m venv --system-site-packages .venvs/visn-py313
+   source .venvs/visn-py313/bin/activate
+   pip install --upgrade pip setuptools wheel
+   pip install opencv-python numpy pillow picamera2
+   ```
+
+Camera Bring-up Steps
+1. Captured stills with `camera_test_picamera2.py` (Picamera2 single-shot script). First run OK, confirming lens focus and `img1.jpg` creation.
+2. Second run failed because the lens was covered; third run hit a Picamera2 timeout (`Camera frontend has timed out!`) traced to a loose ribbon. Reseated the cable and re-ran successfully.
+3. Verified OpenCV `VideoCapture(0)` still fails (known driver limitation on this image). We now rely exclusively on Picamera2 APIs.
+
+YOLOv11n (ONNX) Smoke Tests
+1. Activated env and exported repo to PYTHONPATH before running helpers:
+   ```
+   source .venvs/visn-py313/bin/activate
+   export PYTHONPATH=/home/dev/project_root
+   ```
+2. Ran the quick inference harness to ensure the model, pre/postprocess, and labels line up:
+   ```
+   python - <<'PY'
+   import cv2
+   from src.vision.pi_inference import load_model, preprocess, run_inference, _decode_yolo_output, _load_labels
+   frame = cv2.imread('img1.jpg')
+   handle = load_model('onnx', 'models/vision/yolo11n.onnx')
+   inp = preprocess(frame, 640)
+   outputs = run_inference(handle, inp)
+   labels = _load_labels('models/vision/coco_labels.txt')
+   dets = _decode_yolo_output(outputs, frame.shape, 640, labels, 0.25, 0.45)
+   print('detections', dets[:3])
+   PY
+   ```
+   Observed ONNX Runtime warning about `/sys/class/drm/card1/device/vendor` (safe to ignore) and zero detections because the frame only contained a blank surface.
+
+Real-time Pipeline Settings & References
+- Picamera2 Example Baseline: Raspberry Pi's `opencv_face_detect.py` uses a `create_preview_configuration` at 640x480 RGB888 to balance ISP load and CPU-side OpenCV work, which matches our decision to keep the ISP output modest for inference loops.[Ref: raspberrypi/picamera2/examples/opencv_face_detect.py]
+- YOLO Input Recommendation: Raspberry Pi's `tensorflow/yolo_v5_real_time_with_labels.py` keeps the camera preview at 1920x1080 but resizes the inference tensor to 640x640 because that is what small YOLO exports expect; we follow the same rule for the yolo11n ONNX file.[Ref: raspberrypi/picamera2/examples/tensorflow/yolo_v5_real_time_with_labels.py]
+- Applied configuration for Pi-friendly throughput:
+  - Picamera2 video stream: 832x468 RGB888 (keeps aspect close to 16:9 while reducing pixels vs 1280x720).
+  - Model input size: 640 (required by the provided ONNX export; attempts at 416 cause ONNX `INVALID_ARGUMENT`).
+  - Confidence/IoU: 0.25 / 0.45 to mirror Ultralytics defaults.
+  - Display disabled to avoid Qt overhead; rely on console summaries from `_draw_detections`.
+
+End-to-End Command (latest run)
+```
+source .venvs/visn-py313/bin/activate
+export PYTHONPATH=/home/dev/project_root
+python scripts/run_pi_inference.py \
+  --backend onnx \
+  --model models/vision/yolo11n.onnx \
+  --img 640 \
+  --picam2 \
+  --picam-width 832 \
+  --picam-height 468 \
+  --conf 0.25 \
+  --iou 0.45 \
+  --no-display
+```
+Results: FPS stabilized between 0.8 and 1.2 during well-lit shots, with detections such as `clock:0.8`. CPU warning persisted (`GPU device discovery failed`) but inference continued on CPU.
+
+Issues & Resolutions
+1. Picamera2 import failure inside `.venvs/visn` → root cause: `_libcamera` compiled for CPython 3.13. Resolution: create `.venvs/visn-py313` with `--system-site-packages`.
+2. Camera timeout / cloth blocking sensor → physically inspected CSI ribbon, reattached, uncovered lens.
+3. OpenCV `VideoCapture` returning `None` frames → accepted limitation; standard practice from Picamera2 repo is to bypass V4L2 and capture via Picamera2 directly.
+4. ONNX Runtime GPU warnings → informational only; environment lacks `/sys/class/drm/card1`, so CPU path is used.
+5. Attempted model input of 416 → ONNX raised `INVALID_ARGUMENT` (model frozen at 640). Reverted to 640 input, kept smaller ISP resolution for some savings.
+
+Operational Tips
+- If detections drop to zero, ensure a COCO-class object is present and lighting is sufficient; the small yolo11n model struggles with low light/noise.
+- To squeeze more FPS, consider swapping to an even smaller ONNX export (e.g., yolo11n-int8) or reduce sensor frame rate via `--picam-width/height` and Picamera2 controls.
+- Always export `PYTHONPATH=/home/dev/project_root` before running `scripts/run_pi_inference.py` so the module imports resolve.
+
+Finalized Runtime Defaults (Dec 10 refresh)
+- Based on the sustained FPS tests above, the repo defaults now assume Pi-friendly settings:
+   - `--img 640` to match Ultralytics exports bundled as `yolo11n.onnx`.
+   - `--picam-width 832 --picam-height 468` (roughly 16:9, far lighter than 720p while keeping enough detail for 5 MP optics).
+   - `--picam-fps 12` to cap the ISP workload; PiCamera2 receives the value through `create_video_configuration(..., controls={"FrameRate": fps})`.
+- These defaults are wired into both `src/vision/pi_inference.py` and the wrapper `scripts/run_pi_inference.py`, so a plain `python scripts/run_pi_inference.py --backend onnx --model models/vision/yolo11n.onnx --picam2 --no-display` now launches with the tuned values automatically.
+- To revert to the old higher-resolution feed, simply override the CLI flags; the documentation here will remain as a reminder of the rationale (RPi4 CPU-bound inference benefits more from smaller ISP frames than from reducing the ONNX input size, since the model is fixed at 640×640).

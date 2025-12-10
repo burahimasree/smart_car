@@ -1,0 +1,21 @@
+[Unit]
+Description=Pi Assistant Wakeword Detector (Porcupine via AudioManager)
+After=network.target sound.target audio-manager.service
+Wants=audio-manager.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/project_root
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/dev/project_root/.env
+ExecStart=/home/dev/project_root/.venvs/stte/bin/python -m src.wakeword.porcupine_runner --config /home/dev/project_root/config/system.yaml --use-audio-manager
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+User=dev
+Group=dev
+StandardOutput=append:/home/dev/project_root/logs/wakeword.log
+StandardError=append:/home/dev/project_root/logs/wakeword.service.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+.venvs/
+venv/
+.env
+logs/
+models/
+*.pyc
+__pycache__/
+*.log
+third_party/
+thirdpartyu/
+third_party/LCD-show
+third_party/llama.cpp
+third_party/LCD-show
+third_party/llama.cpp
+third_party/LCD-show
+third_party/llama.cpp

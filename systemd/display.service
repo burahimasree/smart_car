@@ -1,0 +1,21 @@
+[Unit]
+Description=Pi Assistant Display Service (pygame Kawaii face)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/project_root
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/dev/project_root/.env
+ExecStart=/home/dev/project_root/.venvs/dise/bin/python -m src.ui.display_runner --fb /dev/fb0
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+User=dev
+Group=dev
+StandardOutput=append:/home/dev/project_root/logs/display.service.log
+StandardError=append:/home/dev/project_root/logs/display.service.log
+
+[Install]
+WantedBy=multi-user.target
+
