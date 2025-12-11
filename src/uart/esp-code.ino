@@ -49,6 +49,12 @@ Servo myServo;
 #define SERVO_MAX_ANGLE 180
 #define SERVO_DEFAULT_ANGLE 90
 
+// === COLLISION AVOIDANCE CONSTANTS ===
+#define STOP_DISTANCE_CM 10       // Emergency stop distance
+#define WARNING_DISTANCE_CM 20    // Warning zone - block forward
+#define SCAN_ROTATE_TIME_MS 200   // Time to rotate during scan
+#define SCAN_PAUSE_MS 100         // Pause after rotation to let sensors settle
+
 // Command buffer
 #define CMD_BUFFER_SIZE 128
 char cmdBuffer[CMD_BUFFER_SIZE];
@@ -58,7 +64,14 @@ int cmdIndex = 0;
 int currentServoAngle = SERVO_DEFAULT_ANGLE;
 int leftMotorSpeed = 0;
 int rightMotorSpeed = 0;
-bool motorsEnabled = true;
+
+// === COLLISION AVOIDANCE STATE ===
+bool motorsEnabled = true;           // Can we drive forward?
+bool obstacleDetected = false;       // Is there an obstacle in stop zone?
+bool inWarningZone = false;          // Is there an obstacle in warning zone?
+long lastSensorDistances[3] = {-1, -1, -1};  // S1, S2, S3 cached
+unsigned long lastCollisionCheck = 0;
+#define COLLISION_CHECK_INTERVAL_MS 20  // Check every 20ms (50Hz)
 
 // ===================================
 // === FUNCTION PROTOTYPES         ===
@@ -74,6 +87,12 @@ void handleCommand(String command, String source);
 void sendAck(String cmd, String status);
 void sendStatus();
 int parseIntParam(String cmd, int defaultVal);
+
+// === COLLISION AVOIDANCE FUNCTIONS ===
+void checkCollision();
+void emergencyStop();
+void sendCollisionAlert(const char* reason);
+void performScan();
 
 // ===================================
 // === SETUP                       ===
@@ -127,7 +146,15 @@ void loop() {
   long dist3 = readDistance(TRIG3_PIN, ECHO3_PIN);
   int mq2_value = analogRead(MQ2_PIN); // Read analog value (0-4095)
 
-  // === 2. SEND DATA TO RASPBERRY PI ===
+  // Cache sensor readings for collision check
+  lastSensorDistances[0] = dist1;
+  lastSensorDistances[1] = dist2;
+  lastSensorDistances[2] = dist3;
+
+  // === 2. COLLISION AVOIDANCE - HIGHEST PRIORITY ===
+  checkCollision();
+
+  // === 3. SEND DATA TO RASPBERRY PI ===
   // Send data as a single, comma-separated line ending with '\n'
   PiSerial.print("DATA:S1:"); PiSerial.print(dist1);
   PiSerial.print(",S2:"); PiSerial.print(dist2);
@@ -136,9 +163,11 @@ void loop() {
   PiSerial.print(",SERVO:"); PiSerial.print(currentServoAngle);
   PiSerial.print(",LMOTOR:"); PiSerial.print(leftMotorSpeed);
   PiSerial.print(",RMOTOR:"); PiSerial.print(rightMotorSpeed);
+  PiSerial.print(",OBSTACLE:"); PiSerial.print(obstacleDetected ? 1 : 0);
+  PiSerial.print(",WARNING:"); PiSerial.print(inWarningZone ? 1 : 0);
   PiSerial.println(); // Send newline
 
-  // === 3. CHECK FOR COMMANDS ===
+  // === 4. CHECK FOR COMMANDS ===
   // Read from USB Serial Monitor
   while (Serial.available() > 0) {
     char c = Serial.read();
@@ -167,14 +196,14 @@ void loop() {
     }
   }
 
-  // === 4. PRINT TO SERIAL MONITOR (for debugging) ===
+  // === 5. PRINT TO SERIAL MONITOR (for debugging) ===
   Serial.print("S1: "); Serial.print(dist1);
   Serial.print(" cm | S2: "); Serial.print(dist2);
   Serial.print(" cm | S3: "); Serial.print(dist3);
   Serial.print(" cm | MQ2: "); Serial.print(mq2_value);
-  Serial.print(" | Servo: "); Serial.print(currentServoAngle);
-  Serial.print(" | LSpeed: "); Serial.print(leftMotorSpeed);
-  Serial.print(" | RSpeed: "); Serial.println(rightMotorSpeed);
+  Serial.print(" | OBS: "); Serial.print(obstacleDetected ? "Y" : "N");
+  Serial.print(" | WARN: "); Serial.print(inWarningZone ? "Y" : "N");
+  Serial.print(" | MotorOK: "); Serial.println(motorsEnabled ? "Y" : "N");
 
   // --- DELAY ---
   delay(50); // Send ~20 Hz updates
@@ -202,9 +231,21 @@ void handleCommand(String command, String source) {
     currentServoAngle = angle;
     sendAck("SERVO", "OK:" + String(angle));
   } else if (cmdu.startsWith("FORWARD")) {
+    // === COLLISION CHECK: Block forward if obstacle in warning zone ===
+    if (!motorsEnabled || obstacleDetected) {
+      sendAck("FORWARD", "BLOCKED:OBSTACLE");
+      Serial.println("FORWARD BLOCKED - Obstacle detected!");
+      return;
+    }
+    if (inWarningZone) {
+      sendAck("FORWARD", "BLOCKED:WARNING_ZONE");
+      Serial.println("FORWARD BLOCKED - In warning zone!");
+      return;
+    }
     moveForward(255);  // Digital full speed
     sendAck("FORWARD", "OK");
   } else if (cmdu.startsWith("BACKWARD")) {
+    // Backward is always allowed (escape maneuver)
     moveBackward(255);
     sendAck("BACKWARD", "OK");
   } else if (cmdu.startsWith("LEFT")) {
@@ -222,7 +263,19 @@ void handleCommand(String command, String source) {
     myServo.write(SERVO_DEFAULT_ANGLE);
     currentServoAngle = SERVO_DEFAULT_ANGLE;
     stopMotors();
+    motorsEnabled = true;
+    obstacleDetected = false;
+    inWarningZone = false;
     sendAck("RESET", "OK");
+  } else if (cmdu == "SCAN") {
+    // Initiate 360-degree scan by rotating robot
+    performScan();
+    sendAck("SCAN", "OK");
+  } else if (cmdu == "CLEARBLOCK") {
+    // Manual override to clear obstacle block (use with caution!)
+    motorsEnabled = true;
+    obstacleDetected = false;
+    sendAck("CLEARBLOCK", "OK");
   } else {
     sendAck(command, "UNKNOWN");
   }
@@ -293,4 +346,145 @@ int parseIntParam(String cmd, int defaultVal) {
     return param.toInt();
   }
   return defaultVal;
+}
+
+// ===================================
+// === COLLISION AVOIDANCE         ===
+// ===================================
+
+void checkCollision() {
+  // Get minimum distance from all front-facing sensors
+  long minDist = 9999;
+  int closestSensor = -1;
+  
+  for (int i = 0; i < 3; i++) {
+    long d = lastSensorDistances[i];
+    // Ignore invalid readings (-1 = timeout)
+    if (d > 0 && d < minDist) {
+      minDist = d;
+      closestSensor = i + 1;  // S1, S2, S3
+    }
+  }
+  
+  // Previous states for change detection
+  bool wasObstacle = obstacleDetected;
+  bool wasWarning = inWarningZone;
+  
+  // === EMERGENCY STOP ZONE (<10cm) ===
+  if (minDist <= STOP_DISTANCE_CM) {
+    if (!obstacleDetected) {
+      emergencyStop();
+      sendCollisionAlert("EMERGENCY_STOP");
+    }
+    obstacleDetected = true;
+    motorsEnabled = false;
+    inWarningZone = true;
+  }
+  // === WARNING ZONE (10-20cm) ===
+  else if (minDist <= WARNING_DISTANCE_CM) {
+    obstacleDetected = false;
+    inWarningZone = true;
+    motorsEnabled = true;  // Can still turn/backup, but forward blocked in handleCommand
+    if (!wasWarning) {
+      sendCollisionAlert("WARNING_ZONE");
+    }
+  }
+  // === CLEAR ZONE (>20cm) ===
+  else {
+    obstacleDetected = false;
+    inWarningZone = false;
+    motorsEnabled = true;
+    // Only notify once when clearing
+    if (wasObstacle || wasWarning) {
+      sendCollisionAlert("CLEAR");
+    }
+  }
+}
+
+void emergencyStop() {
+  // Immediately stop all motors
+  stopMotors();
+  Serial.println("!!! EMERGENCY STOP - OBSTACLE TOO CLOSE !!!");
+}
+
+void sendCollisionAlert(const char* reason) {
+  // Send alert to Pi over UART
+  PiSerial.print("ALERT:COLLISION:");
+  PiSerial.print(reason);
+  PiSerial.print(",S1:");
+  PiSerial.print(lastSensorDistances[0]);
+  PiSerial.print(",S2:");
+  PiSerial.print(lastSensorDistances[1]);
+  PiSerial.print(",S3:");
+  PiSerial.println(lastSensorDistances[2]);
+}
+
+void performScan() {
+  // Perform a 360-degree scan by rotating the robot
+  // Since no servo scanning, robot rotates and reads sensors
+  Serial.println("Starting 360 scan...");
+  PiSerial.println("SCAN:START");
+  
+  // We'll do 8 positions (every 45 degrees = ~200ms rotation each)
+  int scanResults[8][3];  // 8 positions, 3 sensors each
+  
+  for (int pos = 0; pos < 8; pos++) {
+    // Read current distances
+    scanResults[pos][0] = readDistance(TRIG1_PIN, ECHO1_PIN);
+    scanResults[pos][1] = readDistance(TRIG2_PIN, ECHO2_PIN);
+    scanResults[pos][2] = readDistance(TRIG3_PIN, ECHO3_PIN);
+    
+    // Send scan data for this position
+    PiSerial.print("SCAN:POS:");
+    PiSerial.print(pos * 45);  // Approximate angle
+    PiSerial.print(",S1:");
+    PiSerial.print(scanResults[pos][0]);
+    PiSerial.print(",S2:");
+    PiSerial.print(scanResults[pos][1]);
+    PiSerial.print(",S3:");
+    PiSerial.println(scanResults[pos][2]);
+    
+    // Don't rotate on last position
+    if (pos < 7) {
+      // Rotate right for ~45 degrees
+      turnRight(255);
+      delay(SCAN_ROTATE_TIME_MS);
+      stopMotors();
+      delay(SCAN_PAUSE_MS);  // Let sensors settle
+    }
+  }
+  
+  // Find safest direction (position with max average distance)
+  int bestPos = 0;
+  long bestAvg = 0;
+  
+  for (int pos = 0; pos < 8; pos++) {
+    long avg = 0;
+    int validCount = 0;
+    for (int s = 0; s < 3; s++) {
+      if (scanResults[pos][s] > 0) {
+        avg += scanResults[pos][s];
+        validCount++;
+      }
+    }
+    if (validCount > 0) {
+      avg /= validCount;
+      if (avg > bestAvg) {
+        bestAvg = avg;
+        bestPos = pos;
+      }
+    }
+  }
+  
+  // Report best direction
+  PiSerial.print("SCAN:BEST:");
+  PiSerial.print(bestPos * 45);
+  PiSerial.print(",DIST:");
+  PiSerial.println(bestAvg);
+  
+  PiSerial.println("SCAN:COMPLETE");
+  Serial.print("Scan complete. Best direction: ");
+  Serial.print(bestPos * 45);
+  Serial.print(" deg, avg dist: ");
+  Serial.println(bestAvg);
 }

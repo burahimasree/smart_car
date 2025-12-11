@@ -30,6 +30,7 @@ from src.core.ipc import (
     TOPIC_CMD_LISTEN_START,
     TOPIC_CMD_LISTEN_STOP,
     TOPIC_DISPLAY_STATE,
+    TOPIC_ESP,
     TOPIC_LLM_REQ,
     TOPIC_LLM_RESP,
     TOPIC_NAV,
@@ -64,6 +65,10 @@ class Orchestrator:
             "vision_request_text": "",
             "tracking_target": None,
             "last_nav_direction": "stopped",  # Track for LLM context
+            # ESP32 sensor state for collision awareness
+            "esp_obstacle": False,
+            "esp_warning": False,
+            "esp_min_distance": -1,
         }
 
         # Heartbeat auto-trigger configuration
@@ -311,8 +316,42 @@ class Orchestrator:
                     direction = "left"
                 elif cx > 440:
                     direction = "right"
+                
+                # Safety check: don't move forward if obstacle detected
+                if direction == "forward" and (self.state.get("esp_obstacle") or self.state.get("esp_warning")):
+                    logger.warning("Visual servoing: forward blocked by obstacle (min_dist=%s)", 
+                                   self.state.get("esp_min_distance"))
+                    direction = "stop"
+                
                 logger.info("Visual servoing target=%s cx=%.1f -> %s", label, cx, direction)
                 self._send_nav(direction)
+
+    def on_esp(self, payload: Dict[str, Any]) -> None:
+        """Handle ESP32 sensor data updates."""
+        # Handle parsed sensor data
+        data = payload.get("data")
+        if data:
+            self.state["esp_obstacle"] = bool(data.get("obstacle", False))
+            self.state["esp_warning"] = bool(data.get("warning", False))
+            self.state["esp_min_distance"] = int(data.get("min_distance", -1))
+        
+        # Handle collision alerts
+        alert = payload.get("alert")
+        if alert == "COLLISION":
+            alert_data = payload.get("alert_data", "")
+            if "EMERGENCY" in alert_data:
+                logger.critical("ESP32 EMERGENCY STOP - obstacle collision!")
+                self.state["esp_obstacle"] = True
+                # Cancel tracking if active
+                if self.state.get("tracking_target"):
+                    logger.warning("Cancelling tracking due to collision alert")
+                    self.state["tracking_target"] = None
+                    self._send_display_state("idle")
+        
+        # Handle command blocked feedback
+        if payload.get("blocked"):
+            logger.warning("ESP32 blocked command %s: %s", 
+                          payload.get("command"), payload.get("reason"))
 
     def _maybe_auto_trigger(self) -> None:
         if not self.auto_trigger_enabled:
@@ -363,6 +402,8 @@ class Orchestrator:
                     self.on_visn(payload)
                 elif topic == TOPIC_TTS:
                     self.on_tts(payload)
+                elif topic == TOPIC_ESP:
+                    self.on_esp(payload)
                 elif topic == TOPIC_CMD_LISTEN_START:
                     # Treat manual trigger same as wake
                     self._trigger_listening()

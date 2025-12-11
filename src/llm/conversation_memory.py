@@ -68,7 +68,7 @@ class Message:
 class RobotState:
     """Current state of the robot for context injection."""
     # Navigation
-    direction: str = "stopped"          # forward, back, left, right, stopped
+    direction: str = "stopped"          # forward, backward, left, right, stopped
     tracking_target: Optional[str] = None
     
     # Vision
@@ -117,15 +117,16 @@ class ConversationMemory:
     SYSTEM_PROMPT_TEMPLATE = '''You are GENNY, an AI assistant controlling a physical robot car with camera and motors.
 
 ## YOUR CAPABILITIES:
-- Move: forward, back, left, right, stop
+- Move: forward, backward, left, right, stop
 - See: camera with object detection (YOLO)
 - Track: follow a detected object visually
 - Speak: respond via text-to-speech
+- Scan: do a 360° scan to map surroundings
 
 ## RESPONSE FORMAT (STRICT JSON):
 {{
   "speak": "Your spoken response to the user",
-  "direction": "forward" | "back" | "left" | "right" | "stop",
+  "direction": "forward" | "backward" | "left" | "right" | "stop" | "scan",
   "track": "" | "person" | "object_label"
 }}
 

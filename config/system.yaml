@@ -148,12 +148,16 @@ nav:
   uart_device: /dev/ttyAMA0
   baud_rate: 115200
   timeout: 1.0
+  # Commands MUST match ESP32 esp-code.ino handleCommand() tokens
   commands:
-    forward: "FWD"
-    backward: "BWD"
+    forward: "FORWARD"
+    backward: "BACKWARD"
     left: "LEFT"
     right: "RIGHT"
     stop: "STOP"
+    scan: "SCAN"
+    reset: "RESET"
+    clearblock: "CLEARBLOCK"
 
 display:
   resolution: [480, 320]

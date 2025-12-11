@@ -28,6 +28,8 @@ from src.core.ipc import (
 )
 from src.core.logging_setup import get_logger
 
+import zmq
+
 try:
     import serial
     SERIAL_AVAILABLE = True
@@ -47,8 +49,34 @@ class MotorCommand:
     target: Optional[str] = None  # optional vision target
 
 
+@dataclass
+class SensorData:
+    """Parsed sensor data from ESP32."""
+    s1: int = -1  # Sensor 1 distance (cm)
+    s2: int = -1  # Sensor 2 distance (cm)
+    s3: int = -1  # Sensor 3 distance (cm)
+    mq2: int = 0  # Gas sensor value
+    obstacle: bool = False  # ESP32 detected obstacle
+    warning: bool = False   # ESP32 in warning zone
+    
+    @property
+    def min_distance(self) -> int:
+        """Get minimum valid distance from all sensors."""
+        valid = [d for d in [self.s1, self.s2, self.s3] if d > 0]
+        return min(valid) if valid else -1
+    
+    @property
+    def is_safe(self) -> bool:
+        """Check if it's safe to move forward."""
+        return not self.obstacle and not self.warning and self.min_distance > 20
+
+
 class UARTMotorBridge:
-    """Bidirectional UART bridge for ESP32 motor control."""
+    """Bidirectional UART bridge for ESP32 motor control with collision avoidance."""
+
+    # Safety thresholds (backup to ESP32 safety)
+    STOP_DISTANCE_CM = 10
+    WARNING_DISTANCE_CM = 20
 
     # Default command mapping (can be overridden from config)
     # Align with ESP32 sketch command tokens in esp-code.ino
@@ -60,6 +88,8 @@ class UARTMotorBridge:
         "stop": "STOP",
         "status": "STATUS",
         "reset": "RESET",
+        "scan": "SCAN",
+        "clearblock": "CLEARBLOCK",
     }
 
     def __init__(self, config: Dict[str, Any], sim: bool = False):
@@ -80,6 +110,12 @@ class UARTMotorBridge:
         # IPC sockets
         self.sub: Optional[Any] = None
         self.pub: Optional[Any] = None
+        
+        # Safety state (Pi-side backup)
+        self._last_sensor_data: Optional[SensorData] = None
+        self._blocked_reason: Optional[str] = None
+        self._scan_in_progress = False
+        self._scan_results: list = []
 
     def _open_serial(self) -> bool:
         """Open serial port connection."""
@@ -118,6 +154,8 @@ class UARTMotorBridge:
 
         Supported tokens:
           - FORWARD, BACKWARD, LEFT, RIGHT, STOP, STATUS, RESET
+          - SCAN - 360 degree environment scan
+          - CLEARBLOCK - Clear obstacle block (manual override)
           - SERVO:<angle> (when target field is used as angle)
 
         Notes:
@@ -138,9 +176,80 @@ class UARTMotorBridge:
             # Fallback to STOP if unknown
             base_cmd = "STOP"
         return f"{base_cmd}\n"
+    
+    def _parse_sensor_data(self, data_raw: str) -> Optional[SensorData]:
+        """Parse DATA line from ESP32 into SensorData object.
+        
+        Format: S1:<d1>,S2:<d2>,S3:<d3>,MQ2:<v>,SERVO:<a>,LMOTOR:<ls>,RMOTOR:<rs>,OBSTACLE:<0|1>,WARNING:<0|1>
+        """
+        try:
+            parts = data_raw.split(",")
+            data = SensorData()
+            for part in parts:
+                if ":" not in part:
+                    continue
+                key, val = part.split(":", 1)
+                key = key.strip().upper()
+                val = val.strip()
+                if key == "S1":
+                    data.s1 = int(val)
+                elif key == "S2":
+                    data.s2 = int(val)
+                elif key == "S3":
+                    data.s3 = int(val)
+                elif key == "MQ2":
+                    data.mq2 = int(val)
+                elif key == "OBSTACLE":
+                    data.obstacle = val == "1"
+                elif key == "WARNING":
+                    data.warning = val == "1"
+            return data
+        except Exception as e:
+            logger.warning("Failed to parse sensor data: %s - %s", data_raw, e)
+            return None
+    
+    def _check_pi_side_safety(self, cmd: MotorCommand) -> tuple[bool, str]:
+        """Pi-side safety check as backup to ESP32.
+        
+        Returns (allowed, reason) tuple.
+        """
+        direction = (cmd.direction or "").lower()
+        
+        # Always allow stop, backward, turns, and non-movement commands
+        if direction in ("stop", "backward", "left", "right", "status", "reset", "scan", "clearblock", "servo"):
+            return True, ""
+        
+        # For forward, check sensor data
+        if direction == "forward" and self._last_sensor_data:
+            sd = self._last_sensor_data
+            if sd.obstacle:
+                return False, "ESP32 obstacle detected"
+            if sd.warning:
+                return False, "ESP32 warning zone"
+            if sd.min_distance > 0 and sd.min_distance < self.STOP_DISTANCE_CM:
+                return False, f"Pi safety: distance {sd.min_distance}cm < {self.STOP_DISTANCE_CM}cm"
+            if sd.min_distance > 0 and sd.min_distance < self.WARNING_DISTANCE_CM:
+                return False, f"Pi safety: warning zone {sd.min_distance}cm"
+        
+        return True, ""
 
     def _send_command(self, cmd: MotorCommand) -> bool:
-        """Send command to ESP32."""
+        """Send command to ESP32 with Pi-side safety check."""
+        # Pi-side safety check (backup to ESP32)
+        allowed, reason = self._check_pi_side_safety(cmd)
+        if not allowed:
+            logger.warning("Command %s BLOCKED by Pi safety: %s", cmd.direction, reason)
+            self._blocked_reason = reason
+            # Publish blocked status
+            if self.pub:
+                publish_json(self.pub, TOPIC_ESP, {
+                    "blocked": True,
+                    "command": cmd.direction,
+                    "reason": reason,
+                })
+            return False
+        
+        self._blocked_reason = None
         formatted = self._format_command(cmd)
 
         if self.sim:
@@ -177,6 +286,9 @@ class UARTMotorBridge:
                     if line:
                         self._rx_queue.put(line)
                         logger.debug("UART RX: %s", line)
+                else:
+                    # Brief sleep to prevent busy-spin when no data
+                    time.sleep(0.005)  # 5ms - balance responsiveness vs CPU
             except Exception as e:
                 logger.warning("UART read error: %s", e)
                 time.sleep(0.1)
@@ -195,16 +307,66 @@ class UARTMotorBridge:
                     # Examples:
                     #   ACK:<CMD>:<STATUS>
                     #   STATUS:SERVO:<angle>,LMOTOR:<ls>,RMOTOR:<rs>
-                    #   DATA:S1:<d1>,S2:<d2>,S3:<d3>,MQ2:<v>,SERVO:<a>,LMOTOR:<ls>,RMOTOR:<rs>
+                    #   DATA:S1:<d1>,S2:<d2>,S3:<d3>,MQ2:<v>,SERVO:<a>,LMOTOR:<ls>,RMOTOR:<rs>,OBSTACLE:<0|1>,WARNING:<0|1>
+                    #   ALERT:COLLISION:<reason>,S1:<d1>,S2:<d2>,S3:<d3>
+                    #   SCAN:START|COMPLETE|POS:<angle>|BEST:<angle>
                     parts = line.split(":")
                     if not parts:
                         payload = {"raw": line}
                     elif parts[0] == "ACK" and len(parts) >= 3:
                         payload = {"ack": parts[1], "status": ":".join(parts[2:])}
+                        # Check if forward was blocked by ESP32
+                        if parts[1] == "FORWARD" and "BLOCKED" in parts[2]:
+                            logger.warning("ESP32 blocked FORWARD: %s", parts[2])
                     elif parts[0] == "STATUS":
                         payload = {"status_raw": ":".join(parts[1:])}
                     elif parts[0] == "DATA":
-                        payload = {"data_raw": ":".join(parts[1:])}
+                        data_raw = ":".join(parts[1:])
+                        sensor_data = self._parse_sensor_data(data_raw)
+                        if sensor_data:
+                            self._last_sensor_data = sensor_data
+                            payload = {
+                                "data": {
+                                    "s1": sensor_data.s1,
+                                    "s2": sensor_data.s2,
+                                    "s3": sensor_data.s3,
+                                    "mq2": sensor_data.mq2,
+                                    "min_distance": sensor_data.min_distance,
+                                    "obstacle": sensor_data.obstacle,
+                                    "warning": sensor_data.warning,
+                                    "is_safe": sensor_data.is_safe,
+                                }
+                            }
+                        else:
+                            payload = {"data_raw": data_raw}
+                    elif parts[0] == "ALERT" and len(parts) >= 2:
+                        # Handle collision alerts
+                        alert_type = parts[1] if len(parts) > 1 else "UNKNOWN"
+                        alert_data = ":".join(parts[2:]) if len(parts) > 2 else ""
+                        payload = {"alert": alert_type, "alert_data": alert_data}
+                        logger.warning("ESP32 ALERT: %s - %s", alert_type, alert_data)
+                        # Emergency stop on Pi side too
+                        if alert_type == "COLLISION" and "EMERGENCY" in alert_data:
+                            logger.critical("COLLISION ALERT - Emergency stop triggered!")
+                    elif parts[0] == "SCAN":
+                        # Handle scan updates
+                        scan_type = parts[1] if len(parts) > 1 else "UNKNOWN"
+                        if scan_type == "START":
+                            self._scan_in_progress = True
+                            self._scan_results = []
+                            logger.info("360° scan started")
+                        elif scan_type == "COMPLETE":
+                            self._scan_in_progress = False
+                            logger.info("360° scan complete with %d positions", len(self._scan_results))
+                        elif scan_type == "POS":
+                            # POS:<angle>,S1:<d1>,S2:<d2>,S3:<d3>
+                            scan_data = ":".join(parts[2:]) if len(parts) > 2 else ""
+                            self._scan_results.append({"raw": scan_data})
+                        elif scan_type == "BEST":
+                            # BEST:<angle>,DIST:<dist>
+                            best_data = ":".join(parts[2:]) if len(parts) > 2 else ""
+                            logger.info("Best direction from scan: %s", best_data)
+                        payload = {"scan": scan_type, "scan_data": ":".join(parts[2:]) if len(parts) > 2 else ""}
                     else:
                         payload = {"type": parts[0], "value": ":".join(parts[1:])}
 
@@ -228,6 +390,23 @@ class UARTMotorBridge:
             duration_ms=max(0, duration),
             target=target,
         )
+    
+    def request_scan(self) -> bool:
+        """Request a 360-degree environment scan."""
+        if self._scan_in_progress:
+            logger.warning("Scan already in progress")
+            return False
+        return self._send_command(MotorCommand(direction="scan"))
+    
+    def get_sensor_data(self) -> Optional[SensorData]:
+        """Get the latest sensor data."""
+        return self._last_sensor_data
+    
+    def is_safe_to_move(self) -> bool:
+        """Check if it's safe to move forward."""
+        if self._last_sensor_data:
+            return self._last_sensor_data.is_safe
+        return True  # No data yet, assume safe (ESP32 will block anyway)
 
     def run(self) -> None:
         """Main bridge loop."""
@@ -250,12 +429,16 @@ class UARTMotorBridge:
 
         try:
             while self._running:
-                # Check for incoming nav commands
+                # Check for incoming nav commands (NON-BLOCKING with timeout)
                 try:
-                    topic, data = self.sub.recv_multipart()
-                    payload = json.loads(data)
-                    cmd = self._parse_nav_command(payload)
-                    self._send_command(cmd)
+                    # Use poller for non-blocking recv with timeout
+                    if self.sub.poll(timeout=50):  # 50ms timeout
+                        topic, data = self.sub.recv_multipart(zmq.NOBLOCK)
+                        payload = json.loads(data)
+                        cmd = self._parse_nav_command(payload)
+                        self._send_command(cmd)
+                except zmq.Again:
+                    pass  # No message available, continue
                 except Exception as e:
                     logger.error("Failed to process nav command: %s", e)
 

@@ -49,7 +49,7 @@ _LEGACY_SYSTEM_PROMPT = (
     "You are a robot assistant controlling a physical robot. "
     "You MUST reply with STRICT JSON only, no extra text or comments. "
     "The JSON schema is: {"
-    "'speak': string, 'direction': 'forward'|'back'|'left'|'right'|'stop', 'track': string}. "
+    "'speak': string, 'direction': 'forward'|'backward'|'left'|'right'|'stop', 'track': string}. "
     "If you do not want to move, use 'direction': 'stop'. "
     "If there is nothing to track, use an empty string for 'track'. "
     "Never include any natural language outside the JSON object."
