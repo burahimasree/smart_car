@@ -1,4 +1,8 @@
-"""Minimal STT service that consumes cmd.listen.start/stop events."""
+"""Minimal STT service that consumes cmd.listen.start/stop events.
+
+Uses sounddevice with device NAME (not index) to properly use ALSA plugin chain
+including dsnoop for shared microphone access with wakeword service.
+"""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
+import sounddevice as sd
+from scipy import signal
 import zmq
 
 from src.core.config_loader import load_config
@@ -27,6 +33,12 @@ from src.core.logging_setup import get_logger
 from src.stt.faster_whisper_runner import load_fast_model, transcribe_fast
 
 
+# Native sample rate of USB mic - dsnoop runs at this rate
+NATIVE_SAMPLE_RATE = 44100
+# STT/Whisper prefers 16kHz
+TARGET_SAMPLE_RATE = 16000
+
+
 class STTService:
     def __init__(self, config_path: Path) -> None:
         self.config = load_config(config_path)
@@ -36,16 +48,17 @@ class STTService:
             log_dir = project_root / log_dir
         self.logger = get_logger("stt.service", log_dir)
 
-        self.sample_rate = int(self.config.get("stt", {}).get("sample_rate", 16000))
+        self.sample_rate = TARGET_SAMPLE_RATE  # Output rate after resampling
         self.frame_ms = int(self.config.get("audio", {}).get("wakeword_frame_ms", 30))
-        self.frames_per_buffer = int(self.sample_rate * self.frame_ms / 1000)
+        self.frames_per_buffer = int(TARGET_SAMPLE_RATE * self.frame_ms / 1000)
+        self.native_frames_per_buffer = int(NATIVE_SAMPLE_RATE * self.frame_ms / 1000)
         self.silence_threshold = float(self.config.get("stt", {}).get("silence_threshold", 0.35))
         self.silence_duration_ms = int(self.config.get("stt", {}).get("silence_duration_ms", 900))
         self.max_capture_seconds = float(self.config.get("stt", {}).get("max_capture_seconds", 10))
         self.language = self.config.get("stt", {}).get("language", "en")
-        self.mic_device = str(self.config.get("stt", {}).get("mic_device") or "default")
+        self.mic_device = str(self.config.get("stt", {}).get("mic_device") or "smartcar_capture")
 
-        self.pa = self._init_pyaudio()
+        # Open sounddevice stream with ALSA device NAME for dsnoop sharing
         self.stream = self._open_stream()
 
         self.publisher = make_publisher(self.config, channel="upstream")
@@ -60,7 +73,8 @@ class STTService:
     # --------------------- public API ---------------------
 
     def run(self) -> None:
-        self.logger.info("STT service running (sample_rate=%s)", self.sample_rate)
+        self.logger.info("STT service running (native=%dHz, target=%dHz, device=%s)", 
+                        NATIVE_SAMPLE_RATE, TARGET_SAMPLE_RATE, self.mic_device)
         while True:
             topic, raw = self.cmd_sub.recv_multipart()
             if topic == TOPIC_CMD_LISTEN_START:
@@ -90,26 +104,56 @@ class STTService:
         start_ts = time.time()
         frames: list[bytes] = []
         silence_ms = 0
-        min_active_ms = 500
+        min_active_ms = 2000  # Minimum 2s capture before allowing silence cutoff
+        speech_started = False  # Track if we've heard any speech
+        initial_wait_ms = 3000  # Wait up to 3s for speech to start
+        
         while not self._stop_event.is_set():
+            elapsed_ms = int((time.time() - start_ts) * 1000)
+            
             if time.time() - start_ts >= self.max_capture_seconds:
                 self.logger.info("STT capture reached max duration")
                 break
             try:
-                pcm = self.stream.read(self.frames_per_buffer, exception_on_overflow=False)
+                # Read at native 44100Hz
+                data, overflowed = self.stream.read(self.native_frames_per_buffer)
+                if overflowed:
+                    self.logger.debug("Audio buffer overflow (non-fatal)")
+                
+                # Convert to float for resampling
+                samples_float = data.flatten().astype(np.float32) / 32768.0
+                
+                # Resample 44100 -> 16000
+                resampled = signal.resample(samples_float, self.frames_per_buffer)
+                
+                # Convert back to int16 PCM bytes
+                samples_16k = (resampled * 32768.0).astype(np.int16)
+                pcm = samples_16k.tobytes()
             except Exception as exc:
                 self.logger.error("STT capture read failed: %s", exc)
                 break
             frames.append(pcm)
             samples = np.frombuffer(pcm, dtype=np.int16)
             amplitude = float(np.max(np.abs(samples))) / 32768.0 if samples.size else 0.0
-            if amplitude < self.silence_threshold:
-                silence_ms += self.frame_ms
-                if silence_ms >= self.silence_duration_ms and len(frames) * self.frame_ms >= min_active_ms:
-                    self.logger.info("Silence tail reached; closing session")
-                    break
-            else:
+            
+            # Track if speech has started
+            if amplitude >= self.silence_threshold:
+                speech_started = True
                 silence_ms = 0
+            else:
+                silence_ms += self.frame_ms
+            
+            # Only check for silence cutoff AFTER:
+            # 1. Speech has started, OR we've waited initial_wait_ms
+            # 2. We have at least min_active_ms of audio
+            # 3. We've had silence_duration_ms of continuous silence
+            can_check_silence = (speech_started or elapsed_ms >= initial_wait_ms) and elapsed_ms >= min_active_ms
+            
+            if can_check_silence and silence_ms >= self.silence_duration_ms:
+                self.logger.info("Silence tail reached after %dms (speech_started=%s); closing session", 
+                               elapsed_ms, speech_started)
+                break
+                
         self._emit_transcription(frames, start_ts)
 
     # --------------------- transcription ---------------------
@@ -175,40 +219,28 @@ class STTService:
             "kind": "final",
         }
 
-    def _open_stream(self):
-        device_index = self._find_device_index()
+    def _open_stream(self) -> sd.InputStream:
+        """Open sounddevice stream by device NAME for proper ALSA dsnoop usage."""
+        # Use device name directly - this enables ALSA plugin chain (dsnoop)
+        device = self.mic_device if self.mic_device != "default" else None
+        
         try:
-            return self.pa.open(
-                format=self.pa.get_format_from_width(2),
+            stream = sd.InputStream(
+                device=device,
+                samplerate=NATIVE_SAMPLE_RATE,
                 channels=1,
-                rate=self.sample_rate,
-                input=True,
-                frames_per_buffer=self.frames_per_buffer,
-                input_device_index=device_index,
+                dtype='int16',
+                blocksize=self.native_frames_per_buffer,
             )
+            stream.start()
+            self.logger.info(
+                "Opened audio stream: device=%s, rate=%d, blocksize=%d",
+                self.mic_device, NATIVE_SAMPLE_RATE, self.native_frames_per_buffer
+            )
+            return stream
         except Exception as exc:
-            self.logger.error("Failed to open STT capture stream: %s", exc)
+            self.logger.error("Failed to open STT capture stream on '%s': %s", self.mic_device, exc)
             raise RuntimeError("Unable to open microphone for STT") from exc
-
-    def _find_device_index(self) -> Optional[int]:
-        if self.mic_device == "default":
-            return None
-        keyword = self.mic_device.lower()
-        for idx in range(self.pa.get_device_count()):
-            info = self.pa.get_device_info_by_index(idx)
-            if info.get("maxInputChannels", 0) <= 0:
-                continue
-            if keyword in info.get("name", "").lower():
-                return idx
-        return None
-
-    @staticmethod
-    def _init_pyaudio():
-        try:
-            import pyaudio
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("PyAudio is required for STT service") from exc
-        return pyaudio.PyAudio()
 
 
 def main() -> None:

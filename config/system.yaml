@@ -30,7 +30,8 @@ audio:
   hw_buffer_ms: 20
   wakeword_frame_ms: 30
   stt_chunk_ms: 500
-  mic_device: default
+  # Use shared ALSA dsnoop - enables simultaneous mic access
+  mic_device: smartcar_capture
   speaker_device: default
 
 wakeword:
@@ -56,19 +57,20 @@ wakeword:
   stte_venv: ${PROJECT_ROOT}/.venvs/stte
   fallback_engine: pytorch
   # Use shared ALSA dsnoop device configured via /etc/asound.conf
-  mic_device: default
+  # MUST match a device name from PyAudio enumeration
+  mic_device: smartcar_capture
 
 stt:
   engine: faster_whisper
-  mic_hw: default
+  mic_hw: smartcar_capture
   sample_rate: 16000
   language: en
-  silence_threshold: 0.35
-  silence_duration_ms: 900
+  silence_threshold: 0.20
+  silence_duration_ms: 1200
   max_capture_seconds: 15
   min_confidence: 0.5  # Added: gate low-confidence transcripts
   runner_venv: ${PROJECT_ROOT}/.venvs/stte/bin/python
-  mic_device: default
+  mic_device: smartcar_capture
   # Safety timeout in seconds for a single listen session; if exceeded,
   # orchestrator cancels listening and resumes vision.
   timeout_seconds: 10.0
@@ -107,7 +109,7 @@ tts:
 llm:
   engine: gemini
   # Cloud Gemini model configuration
-  gemini_model: gemini-1.5-flash
+  gemini_model: gemini-2.5-flash
   # API key is read from environment by default
   gemini_api_key: ${ENV:GEMINI_API_KEY}
   # Optional tuning knobs

@@ -1,5 +1,5 @@
 [Unit]
-Description=Smart Car Wakeword (Porcupine)
+Description=Smart Car TTS (Piper)
 After=orchestrator.service
 Requires=orchestrator.service
 StartLimitIntervalSec=0
@@ -13,11 +13,11 @@ Environment=PROJECT_ROOT=/home/dev/smart_car
 Environment=PYTHONPATH=/home/dev/smart_car
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/dev/smart_car/.env
-ExecStart=/home/dev/smart_car/.venvs/stte/bin/python -m src.wake.service --config config/system.yaml
+ExecStart=/home/dev/smart_car/.venvs/ttse/bin/python -m src.tts.piper_runner
 Restart=on-failure
 RestartSec=3
-StandardOutput=append:/home/dev/smart_car/logs/wakeword.log
-StandardError=append:/home/dev/smart_car/logs/wakeword.log
+StandardOutput=append:/home/dev/smart_car/logs/tts.log
+StandardError=append:/home/dev/smart_car/logs/tts.log
 
 [Install]
 WantedBy=multi-user.target

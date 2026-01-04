@@ -1,0 +1,16 @@
+--- core ---
+python: Python 3.11.9
+import traceback
+import sys
+from importlib import import_module
+pkgs = [yaml,zmq,numpy,pyaudio,cv2,onnxruntime,torch,pvporcupine]
+for p in pkgs:
+    try:
+        m = import_module(p)
+        print(p, OK, getattr(m, __file__, builtin))
+    except Exception:
+        print(p, ERROR)
+        traceback.print_exc()
+Python 3.11.9 (main, Nov 18 2025, 14:58:44) [GCC 14.2.0] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+>>> 

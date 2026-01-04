@@ -1,0 +1,331 @@
+Import check report - Sat Jan  3 04:27:02 IST 2026
+\n--- core ---
+core: python -> Python 3.11.9
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- dise ---
+dise: python -> Python 3.13.5
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- llme ---
+llme: python -> Python 3.11.9
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- stte ---
+stte: python -> Python 3.11.9
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- ttse ---
+ttse: python -> Python 3.11.9
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- visn ---
+visn: python -> Python 3.11.9
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\n--- visn-py313 ---
+visn-py313: python -> Python 3.13.5
+Checking yaml ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking zmq ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking numpy ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pyaudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking cv2 ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking onnxruntime ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking torch ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking pvporcupine ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+Checking PyAudio ...   File "<string>", line 1
+    import importlib,sys; m=; importlib.import_module(m); print(OK)
+                            ^
+SyntaxError: invalid syntax
+FAIL
+\nReport saved to reports/import-checks.txt

@@ -1,17 +1,23 @@
 [Unit]
-Description=Smart Car LLM (Google Gemini)
-After=network-online.target
-Wants=network-online.target
+Description=Smart Car LLM (Gemini)
+After=orchestrator.service
+Requires=orchestrator.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/dev/project_root
-Environment=PROJECT_ROOT=/home/dev/project_root
-# Optionally load GEMINI_API_KEY from a drop-in file
-EnvironmentFile=-/etc/default/smartcar-llm
-ExecStart=/home/dev/project_root/.venvs/llme/bin/python -m src.llm.gemini_runner
+User=dev
+Group=dev
+WorkingDirectory=/home/dev/smart_car
+Environment=PROJECT_ROOT=/home/dev/smart_car
+Environment=PYTHONPATH=/home/dev/smart_car
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/dev/smart_car/.env
+ExecStart=/home/dev/smart_car/.venvs/llme/bin/python -m src.llm.llm_runner
 Restart=on-failure
-RestartSec=2
+RestartSec=3
+StandardOutput=append:/home/dev/smart_car/logs/llm.log
+StandardError=append:/home/dev/smart_car/logs/llm.log
 
 [Install]
 WantedBy=multi-user.target
