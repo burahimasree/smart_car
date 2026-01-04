@@ -69,11 +69,14 @@ class STTService:
         self._stop_event = threading.Event()
         self._session_lock = threading.Lock()
         self._model = None
+        
+        # Preload whisper model at startup to avoid timeout on first request
+        self._ensure_model()
 
     # --------------------- public API ---------------------
 
     def run(self) -> None:
-        self.logger.info("STT service running (native=%dHz, target=%dHz, device=%s)", 
+        self.logger.info("STT service running (native=%dHz, target=%dHz, device=%s, model=loaded)", 
                         NATIVE_SAMPLE_RATE, TARGET_SAMPLE_RATE, self.mic_device)
         while True:
             topic, raw = self.cmd_sub.recv_multipart()

@@ -73,7 +73,7 @@ stt:
   mic_device: smartcar_capture
   # Safety timeout in seconds for a single listen session; if exceeded,
   # orchestrator cancels listening and resumes vision.
-  timeout_seconds: 10.0
+  timeout_seconds: 15.0
   engines:
     faster_whisper:
       model: tiny.en
