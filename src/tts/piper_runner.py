@@ -46,6 +46,7 @@ def run() -> None:
         # Run piper and pipe to aplay
         cmd = f"{shlex.quote(str(bin_path))} -m {shlex.quote(str(model_path))} -f -"
         logger.info("Speaking %d chars", len(text))
+        publish_json(pub, TOPIC_TTS, {"started": True})
         # Use plughw:0,0 (BCM headphone jack) to avoid USB device conflict with mic capture
         playback_device = tts.get("playback_device", "plughw:0,0")
         with subprocess.Popen(

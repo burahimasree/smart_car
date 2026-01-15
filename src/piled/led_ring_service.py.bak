@@ -5,15 +5,12 @@ ARCHITECTURE:
     No internal flags. No inference from other topics.
     The orchestrator publishes phase, we render it.
 
-LED STATES (user-specified color scheme):
-    idle (wakeword listening) - Dim cyan breathing (waiting, ready)
-    wakeword_detected        - Bright GREEN flash (acknowledged!)
-    listening (STT capture)  - Bright BLUE sweep (capturing audio)
-    transcribing             - PURPLE pulse (STT processing)
-    thinking                 - PINK pulse (LLM processing)
-    tts_processing           - ORANGE pulse (generating speech)
-    speaking                 - Dark GREEN chase pattern (playing audio)
-    error                    - RED blink (system error)
+LED STATES (1:1 with orchestrator Phase):
+    idle      - Gentle cyan pulse (system ready)
+    listening - Blue sweep (capturing audio)
+    thinking  - Purple pulse (LLM processing)
+    speaking  - Green pulse (TTS playing)
+    error     - Red blink (system error)
 
 DESIGN PRINCIPLE:
     If a human cannot tell what the system is doing
@@ -124,30 +121,18 @@ class LedAnimator:
     """Generates color frames for each phase state.
     
     LED = f(Phase). Each phase has a distinct, human-recognizable pattern.
-    
-    COLOR SCHEME (user-specified):
-        idle (wakeword listening) - Dim cyan breathing (waiting)
-        wakeword_detected        - Bright GREEN flash (acknowledged!)
-        listening (STT capture)  - Bright BLUE sweep (capturing audio)
-        transcribing             - PURPLE pulse (STT processing)
-        thinking                 - PINK pulse (LLM processing)
-        tts_processing           - ORANGE pulse (generating speech)
-        speaking                 - Dark GREEN chase pattern (playing audio)
-        error                    - RED blink (system error)
     """
 
     def __init__(self, hardware: LedRingHardware) -> None:
         self.hw = hardware
         self.current_state = "idle"
         self._last_render = 0.0
-        self._state_entered = 0.0
 
     def set_state(self, state: str) -> None:
         """Set LED state. Only changes on actual state change."""
         if state != self.current_state:
             self.current_state = state
             self._last_render = 0.0  # Force immediate refresh
-            self._state_entered = time.time()
 
     def step(self, now: float) -> None:
         """Render current state at 60fps."""
@@ -158,77 +143,40 @@ class LedAnimator:
         self._last_render = now
 
     def _render_idle(self, now: float) -> None:
-        """IDLE: Dim cyan breathing - waiting for wakeword."""
-        phase = 0.5 + 0.5 * math.sin(now * 1.0)  # Slow breathing
-        level = int(5 + 25 * phase)  # Dim: 5-30 range
-        self.hw.fill((0, level, level + 3))  # Dim cyan
-
-    def _render_wakeword_detected(self, now: float) -> None:
-        """WAKEWORD DETECTED: Bright GREEN flash then settle."""
-        elapsed = now - self._state_entered
-        if elapsed < 0.3:
-            # Bright flash
-            self.hw.fill((0, 255, 0))
-        elif elapsed < 0.6:
-            # Quick fade
-            fade = 1.0 - (elapsed - 0.3) / 0.3
-            level = int(255 * fade)
-            self.hw.fill((0, level, 0))
-        else:
-            # Settle to bright green glow
-            self.hw.fill((0, 150, 20))
+        """IDLE: Gentle cyan pulse - system is ready and listening for wakeword."""
+        phase = 0.5 + 0.5 * math.sin(now * 1.5)
+        level = int(8 + 40 * phase)
+        self.hw.fill((0, level, level + 5))
 
     def _render_listening(self, now: float) -> None:
-        """LISTENING: Bright BLUE sweep - actively capturing audio."""
-        pos = (now * 8) % self.hw.pixel_count  # Faster sweep
+        """LISTENING: Blue sweep - actively capturing audio."""
+        pos = (now * 6) % self.hw.pixel_count
         colors: list[RGB] = []
         for idx in range(self.hw.pixel_count):
             delta = min((idx - pos) % self.hw.pixel_count, (pos - idx) % self.hw.pixel_count)
-            fade = max(0.0, 1.0 - delta / 2.0)
-            value = int(80 + 175 * fade)  # Bright blue: 80-255
-            colors.append((0, int(20 * fade), value))
+            fade = max(0.0, 1.0 - delta / 2.5)
+            value = int(25 + 120 * fade)
+            colors.append((0, 0, value))
         self.hw.show(colors)
-
-    def _render_transcribing(self, now: float) -> None:
-        """TRANSCRIBING: PURPLE pulse - STT processing."""
-        phase = 0.5 + 0.5 * math.sin(now * 3)  # Medium speed pulse
-        r = int(100 + 80 * phase)   # Purple: R
-        g = int(0 + 20 * phase)     # Minimal green
-        b = int(150 + 100 * phase)  # Purple: B dominant
-        self.hw.fill((r, g, b))
 
     def _render_thinking(self, now: float) -> None:
-        """THINKING: PINK pulse - LLM processing."""
-        phase = 0.5 + 0.5 * math.sin(now * 2.5)
-        r = int(200 + 55 * phase)   # Pink: strong R
-        g = int(50 + 50 * phase)    # Some green for pink
-        b = int(100 + 80 * phase)   # Medium blue for pink
-        self.hw.fill((r, g, b))
-
-    def _render_tts_processing(self, now: float) -> None:
-        """TTS PROCESSING: ORANGE pulse - generating speech."""
-        phase = 0.5 + 0.5 * math.sin(now * 3)
-        r = int(200 + 55 * phase)   # Orange: strong R
-        g = int(80 + 60 * phase)    # Orange: medium G
-        b = int(0)                   # No blue for orange
-        self.hw.fill((r, g, b))
-
-    def _render_speaking(self, now: float) -> None:
-        """SPEAKING: Dark GREEN chase pattern - TTS playing."""
-        # Create a chase/blink pattern
-        step = int(now * 6) % 4
+        """THINKING: Purple pulse - LLM is processing."""
         colors: list[RGB] = []
         for idx in range(self.hw.pixel_count):
-            if (idx + step) % 4 == 0:
-                colors.append((0, 120, 30))  # Dark green ON
-            else:
-                colors.append((0, 30, 10))   # Very dim
+            phase = math.sin(now * 2 + idx)
+            colors.append((int(50 + 40 * phase), int(5 + 15 * phase), int(90 + 60 * (1 - phase))))
         self.hw.show(colors)
 
+    def _render_speaking(self, now: float) -> None:
+        """SPEAKING: Green pulse - TTS is playing."""
+        phase = 0.5 + 0.5 * math.sin(now * 4)
+        level = int(40 + 150 * phase)
+        self.hw.fill((0, level, 10))
+
     def _render_error(self, now: float) -> None:
-        """ERROR: RED blink - something is wrong."""
+        """ERROR: Red blink - something is wrong."""
         on = int(now * 4) % 2 == 0
-        self.hw.fill((200, 0, 0) if on else (20, 0, 0))
+        self.hw.fill((150, 0, 0) if on else (0, 0, 0))
 
 
 class LedRingService:
@@ -269,7 +217,7 @@ class LedRingService:
 
         # SINGLE SUBSCRIBER: display state from orchestrator
         self.ctx = zmq.Context.instance()
-        self.sub = make_subscriber(self.config, channel="downstream", topic=TOPIC_DISPLAY_STATE)
+        self.sub = make_subscriber(self.config, channel="upstream", topic=TOPIC_DISPLAY_STATE)
         # Also subscribe to health for system errors
         self.sub.setsockopt(zmq.SUBSCRIBE, TOPIC_HEALTH)
         
@@ -283,7 +231,7 @@ class LedRingService:
         if self._in_error:
             return  # Error state takes priority
         state = payload.get("state", "idle")
-        self.logger.info("Display state received: %s", state)
+        self.logger.debug("Display state: %s", state)
         self.animator.set_state(state)
 
     def _handle_health(self, payload: dict) -> None:
