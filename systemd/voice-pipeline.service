@@ -1,5 +1,5 @@
 [Unit]
-Description=Unified Voice Pipeline (Wakeword + STT)
+Description=Voice Service (Wakeword + STT) - Tested and Working
 After=network.target sound.target
 # Conflicts with old separate services
 Conflicts=wakeword.service stt.service stt-wrapper.service
@@ -16,15 +16,16 @@ EnvironmentFile=/home/dev/smart_car/.env
 # Kill any process holding the mic before starting (ignore failures)
 ExecStartPre=-/usr/bin/fuser -k /dev/snd/pcmC3D0c
 
-ExecStart=/home/dev/smart_car/.venvs/stte/bin/python -m src.audio.unified_voice_pipeline --config config/system.yaml
+# Use the tested voice_service.py with scipy resampling
+ExecStart=/home/dev/smart_car/.venvs/stte/bin/python -m src.audio.voice_service --config config/system.yaml
 
 Restart=always
 RestartSec=3
 TimeoutStartSec=60
 User=dev
 Group=dev
-StandardOutput=append:/home/dev/smart_car/logs/voice_pipeline.log
-StandardError=append:/home/dev/smart_car/logs/voice_pipeline.error.log
+StandardOutput=append:/home/dev/smart_car/logs/voice_service.log
+StandardError=append:/home/dev/smart_car/logs/voice_service.error.log
 
 # Resource limits for Raspberry Pi
 MemoryMax=512M
