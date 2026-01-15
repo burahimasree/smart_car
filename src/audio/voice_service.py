@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Production Voice Service: Wakeword + STT with interrupt capability.
 
-Based on tested, working code (test_wakeword_stt.py) with:
-- 10/10 wakeword detection rate
-- Working silence detection (threshold 0.25)
-- scipy FFT resampling (48kHz → 16kHz)
+TESTED AND WORKING:
+- 10/10 wakeword detection rate with scipy resampling (48kHz → 16kHz)
+- Silence detection threshold 0.25 RMS (calibrated)
+- Wakeword interrupt during capture
 
 ARCHITECTURE (Single-threaded, proven to work):
     ┌──────────────────────────────────────────────────────────┐
@@ -18,11 +18,26 @@ ARCHITECTURE (Single-threaded, proven to work):
     │  1. Read HW_CHUNK samples @ 48kHz                        │
     │  2. Resample to 512 samples @ 16kHz (scipy)              │
     │  3. Feed to Porcupine for wakeword detection             │
-    │  4. On wakeword: capture until silence, transcribe       │
+    │  4. On wakeword: capture until silence/timeout, transcribe│
+    │  5. Publish events to orchestrator via ZMQ IPC           │
     └──────────────────────────────────────────────────────────┘
 
+NOISY ENVIRONMENT HANDLING:
+    - MAX_CAPTURE_SECONDS = 15 ensures transcription even if silence not detected
+    - Silence detection works in quiet environments (threshold 0.25 RMS)
+    - Wakeword interrupt allows user to re-trigger if needed
+
+IPC INTEGRATION:
+    Publishes to upstream (orchestrator listens):
+    - ww.detected: When wakeword is detected
+    - stt.transcription: When transcription is complete
+    
+    Subscribes to downstream (from orchestrator):
+    - cmd.listen.start: Manual trigger to start listening
+    - cmd.listen.stop: Stop current capture
+
 WAKEWORD INTERRUPT:
-    During STT capture/transcription, we check for wakeword in each frame.
+    During STT capture, we check for wakeword in each frame.
     If detected, we cancel current capture and restart the flow.
 """
 import sys
@@ -34,6 +49,8 @@ import ctypes
 import math
 import argparse
 import json
+import signal
+import threading
 import numpy as np
 
 # Suppress ALSA errors BEFORE importing PyAudio
@@ -51,7 +68,8 @@ except Exception:
     pass
 
 import pyaudio
-from scipy import signal
+import zmq
+from scipy import signal as scipy_signal
 import pvporcupine
 
 # Project imports
@@ -63,9 +81,13 @@ from src.core.config_loader import load_config
 from src.core.ipc import (
     TOPIC_STT,
     TOPIC_WW_DETECTED,
+    TOPIC_CMD_LISTEN_START,
+    TOPIC_CMD_LISTEN_STOP,
     make_publisher,
+    make_subscriber,
     publish_json,
 )
+from src.core.logging_setup import get_logger
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURATION (Tested and Calibrated)
@@ -76,7 +98,7 @@ TARGET_RATE = 16000       # Porcupine/Whisper rate
 SENSITIVITY = 0.7         # Wakeword sensitivity (tested: 10/10 detection)
 SILENCE_THRESHOLD = 0.25  # RMS threshold (calibrated from actual mic)
 SILENCE_DURATION_MS = 800 # Stop after 0.8s of silence
-MAX_CAPTURE_SECONDS = 8.0
+MAX_CAPTURE_SECONDS = 15.0  # INCREASED: 15s max for noisy environments
 MIN_CAPTURE_SECONDS = 0.5
 
 
@@ -90,21 +112,38 @@ def calc_rms(samples: np.ndarray) -> float:
 
 def resample_chunk(hw_samples: np.ndarray, target_len: int) -> np.ndarray:
     """Resample using scipy FFT (high quality, tested)."""
-    resampled = signal.resample(hw_samples.astype(np.float32), target_len)
+    resampled = scipy_signal.resample(hw_samples.astype(np.float32), target_len)
     return np.clip(resampled, -32768, 32767).astype(np.int16)
 
 
 class VoiceService:
-    """Production voice service with wakeword interrupt capability."""
+    """Production voice service with wakeword interrupt capability.
+    
+    Integrates with orchestrator via ZMQ IPC:
+    - Publishes ww.detected on wakeword
+    - Publishes stt.transcription after transcription
+    - Listens for cmd.listen.start/stop from orchestrator
+    """
     
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.raw_config = load_config(config_path) if config_path.exists() else {}
         
+        # Setup logging
+        logs_cfg = self.raw_config.get("logs", {}) or {}
+        log_dir = Path(logs_cfg.get("directory", "logs"))
+        self.logger = get_logger("voice_service", log_dir)
+        
         # Get wakeword config
         ww_cfg = self.raw_config.get("wakeword", {}) or {}
         self.access_key = ww_cfg.get("access_key") or os.environ.get("PV_ACCESS_KEY", "")
         self.model_path = ww_cfg.get("model", "")
+        
+        # Get STT config for timeout override
+        stt_cfg = self.raw_config.get("stt", {}) or {}
+        self.max_capture_seconds = float(stt_cfg.get("max_capture_seconds", MAX_CAPTURE_SECONDS))
+        self.silence_threshold = float(stt_cfg.get("silence_threshold", SILENCE_THRESHOLD))
+        self.silence_duration_ms = int(stt_cfg.get("silence_duration_ms", SILENCE_DURATION_MS))
         
         # Components (initialized in start())
         self.porcupine = None
@@ -112,6 +151,7 @@ class VoiceService:
         self.pa = None
         self.stream = None
         self.pub = None
+        self.sub = None
         
         # Frame sizes
         self.frame_length = 512  # Porcupine frame
@@ -122,23 +162,38 @@ class VoiceService:
             "wakeword_detections": 0,
             "stt_transcriptions": 0,
             "stt_interrupts": 0,
+            "manual_triggers": 0,
         }
         
         # Control
+        self._running = False
+        self._manual_trigger = False
+        self._stop_capture = False
+        
+        # Signal handling
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+    
+    def _handle_signal(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        self.logger.info("Received signal %s, shutting down...", signum)
         self._running = False
     
     def start(self) -> bool:
         """Initialize all components."""
         print("=== VOICE SERVICE STARTING ===", flush=True)
+        self.logger.info("Voice service starting")
         print(f"Resampling: {HW_RATE}Hz → {TARGET_RATE}Hz (scipy)", flush=True)
         print(f"Wakeword sensitivity: {SENSITIVITY}", flush=True)
-        print(f"Silence threshold: {SILENCE_THRESHOLD}", flush=True)
+        print(f"Silence threshold: {self.silence_threshold}", flush=True)
+        print(f"Max capture: {self.max_capture_seconds}s (for noisy env)", flush=True)
         print("", flush=True)
         
         # Initialize Porcupine
         print("Initializing Porcupine...", flush=True)
         if not self.access_key:
             print("ERROR: Porcupine access key not set!", flush=True)
+            self.logger.error("Porcupine access key not configured")
             return False
         
         try:
@@ -150,8 +205,10 @@ class VoiceService:
             self.frame_length = self.porcupine.frame_length
             self.hw_chunk = int(self.frame_length * HW_RATE / TARGET_RATE)
             print(f"Porcupine ready (frame_length={self.frame_length})", flush=True)
+            self.logger.info("Porcupine initialized (frame_length=%d)", self.frame_length)
         except Exception as e:
             print(f"ERROR: Porcupine init failed: {e}", flush=True)
+            self.logger.error("Porcupine init failed: %s", e)
             return False
         
         # Initialize faster-whisper
@@ -165,8 +222,10 @@ class VoiceService:
                 download_root=str(PROJECT_ROOT / "third_party/whisper-fast"),
             )
             print("STT model ready!", flush=True)
+            self.logger.info("faster-whisper model loaded")
         except Exception as e:
             print(f"ERROR: STT model load failed: {e}", flush=True)
+            self.logger.error("STT model load failed: %s", e)
             return False
         
         # Initialize PyAudio
@@ -179,10 +238,12 @@ class VoiceService:
             if info["maxInputChannels"] > 0 and "USB" in info["name"]:
                 found_device = i
                 print(f"Found USB device at index {i}: {info['name']}", flush=True)
+                self.logger.info("USB audio device: %s (index %d)", info['name'], i)
                 break
         
         if found_device is None:
             print("ERROR: No USB input device found!", flush=True)
+            self.logger.error("No USB input device found")
             return False
         
         # Open stream
@@ -198,30 +259,50 @@ class VoiceService:
             print(f"Audio stream ready (device {found_device})", flush=True)
         except Exception as e:
             print(f"ERROR: Failed to open audio stream: {e}", flush=True)
+            self.logger.error("Failed to open audio stream: %s", e)
             return False
         
-        # Initialize ZMQ publisher (optional)
+        # Initialize ZMQ publisher (upstream - events to orchestrator)
         try:
             self.pub = make_publisher(self.raw_config, channel="upstream")
-            print("ZMQ publisher ready", flush=True)
+            print("ZMQ publisher ready (upstream)", flush=True)
+            self.logger.info("ZMQ publisher connected to upstream")
         except Exception as e:
             print(f"Warning: ZMQ publisher failed: {e}", flush=True)
+            self.logger.warning("ZMQ publisher failed: %s", e)
             self.pub = None
+        
+        # Initialize ZMQ subscriber (downstream - commands from orchestrator)
+        try:
+            self.sub = make_subscriber(self.raw_config, channel="downstream")
+            # Subscribe to listen commands
+            self.sub.setsockopt_string(zmq.SUBSCRIBE, TOPIC_CMD_LISTEN_START.decode())
+            self.sub.setsockopt_string(zmq.SUBSCRIBE, TOPIC_CMD_LISTEN_STOP.decode())
+            self.sub.setsockopt(zmq.RCVTIMEO, 0)  # Non-blocking
+            print("ZMQ subscriber ready (downstream)", flush=True)
+            self.logger.info("ZMQ subscriber connected to downstream")
+        except Exception as e:
+            print(f"Warning: ZMQ subscriber failed: {e}", flush=True)
+            self.logger.warning("ZMQ subscriber failed: %s", e)
+            self.sub = None
         
         print("", flush=True)
         print("=" * 50, flush=True)
         print("🎤 Voice service ready!", flush=True)
         print("   Say 'HEY VEERA' to trigger", flush=True)
         print("   Say 'HEY VEERA' during capture to interrupt!", flush=True)
+        print(f"   Max capture: {self.max_capture_seconds}s (noisy env safe)", flush=True)
         print("=" * 50, flush=True)
         print("", flush=True)
         
         self._running = True
+        self.logger.info("Voice service started successfully")
         return True
     
     def stop(self):
         """Clean up resources."""
         self._running = False
+        self.logger.info("Voice service stopping...")
         
         if self.stream:
             try:
@@ -242,6 +323,19 @@ class VoiceService:
             except:
                 pass
         
+        if self.sub:
+            try:
+                self.sub.close()
+            except:
+                pass
+        
+        if self.pub:
+            try:
+                self.pub.close()
+            except:
+                pass
+        
+        self.logger.info("Voice service stopped. Stats: %s", self.stats)
         print(f"Voice service stopped. Stats: {self.stats}", flush=True)
     
     def _read_and_resample(self) -> np.ndarray:
@@ -335,35 +429,59 @@ class VoiceService:
     def run(self):
         """Main event loop."""
         chunk_ms = self.frame_length / TARGET_RATE * 1000
-        silence_frames_needed = int(SILENCE_DURATION_MS / chunk_ms)
+        silence_frames_needed = int(self.silence_duration_ms / chunk_ms)
         
         while self._running:
             try:
-                # PHASE 1: Wait for wakeword
+                # Check for commands from orchestrator (non-blocking)
+                self._check_commands()
+                
+                # PHASE 1: Wait for wakeword OR manual trigger
                 print("[IDLE] Listening for wakeword...", flush=True)
+                self.logger.info("IDLE: Waiting for wakeword")
                 
                 while self._running:
+                    # Check for manual trigger command
+                    self._check_commands()
+                    if self._manual_trigger:
+                        self._manual_trigger = False
+                        self.stats["manual_triggers"] += 1
+                        print("", flush=True)
+                        print(f"🎯 MANUAL TRIGGER #{self.stats['manual_triggers']}!", flush=True)
+                        self.logger.info("Manual trigger received")
+                        break
+                    
                     samples = self._read_and_resample()
                     
                     if self._check_wakeword(samples):
                         self.stats["wakeword_detections"] += 1
                         print("", flush=True)
                         print(f"🎯 WAKEWORD #{self.stats['wakeword_detections']}!", flush=True)
+                        self.logger.info("Wakeword detected (#%d)", self.stats['wakeword_detections'])
                         self._publish_wakeword()
                         break
                 
                 if not self._running:
                     break
                 
-                # PHASE 2: Capture audio until silence (with wakeword interrupt)
+                # PHASE 2: Capture audio until silence OR timeout (with wakeword interrupt)
                 print("[CAPTURING] Speak now (pause when done)...", flush=True)
+                self.logger.info("CAPTURING: Recording user speech")
                 
                 capture_buffer = []
                 capture_start = time.time()
                 silence_frames = 0
                 interrupted = False
+                self._stop_capture = False
                 
-                while self._running:
+                while self._running and not self._stop_capture:
+                    # Check for stop command
+                    self._check_commands()
+                    if self._stop_capture:
+                        print("   (Capture stopped by command)", flush=True)
+                        self.logger.info("Capture stopped by command")
+                        break
+                    
                     samples = self._read_and_resample()
                     
                     # CHECK FOR WAKEWORD INTERRUPT
@@ -372,6 +490,7 @@ class VoiceService:
                         self.stats["wakeword_detections"] += 1
                         print("", flush=True)
                         print(f"⚠️ INTERRUPT! Wakeword during capture - restarting!", flush=True)
+                        self.logger.info("Wakeword interrupt during capture")
                         self._publish_wakeword()
                         interrupted = True
                         break
@@ -379,23 +498,25 @@ class VoiceService:
                     capture_buffer.append(samples)
                     elapsed = time.time() - capture_start
                     
-                    # Check max duration
-                    if elapsed >= MAX_CAPTURE_SECONDS:
-                        print(f"   (Max {MAX_CAPTURE_SECONDS}s reached)", flush=True)
+                    # Check max duration (IMPORTANT for noisy environments)
+                    if elapsed >= self.max_capture_seconds:
+                        print(f"   (Max {self.max_capture_seconds}s reached - noisy env auto-stop)", flush=True)
+                        self.logger.info("Max capture duration reached (%.1fs)", self.max_capture_seconds)
                         break
                     
                     # Silence detection
                     rms = calc_rms(samples)
-                    if rms < SILENCE_THRESHOLD:
+                    if rms < self.silence_threshold:
                         silence_frames += 1
                         if silence_frames >= silence_frames_needed and elapsed >= MIN_CAPTURE_SECONDS:
                             print(f"   (Silence after {elapsed:.1f}s)", flush=True)
+                            self.logger.info("Silence detected after %.1fs", elapsed)
                             break
                     else:
                         silence_frames = 0
                 
-                # If interrupted, skip transcription and restart
-                if interrupted:
+                # If interrupted or stopped, skip transcription and restart
+                if interrupted or self._stop_capture:
                     continue
                 
                 if not self._running or not capture_buffer:
@@ -404,8 +525,10 @@ class VoiceService:
                 # PHASE 3: Transcribe
                 capture_ms = int((time.time() - capture_start) * 1000)
                 audio = np.concatenate(capture_buffer)
+                audio_duration = len(audio) / TARGET_RATE
                 
-                print(f"[TRANSCRIBING] {len(audio)/TARGET_RATE:.1f}s of audio...", flush=True)
+                print(f"[TRANSCRIBING] {audio_duration:.1f}s of audio...", flush=True)
+                self.logger.info("TRANSCRIBING: %.1fs of audio", audio_duration)
                 
                 text, confidence, whisper_ms = self._transcribe(audio)
                 self.stats["stt_transcriptions"] += 1
@@ -415,14 +538,44 @@ class VoiceService:
                 print(f"   conf={confidence:.2f}, capture={capture_ms}ms, whisper={whisper_ms}ms", flush=True)
                 print("", flush=True)
                 
+                self.logger.info(
+                    "STT result: '%s' (conf=%.2f, capture=%dms, whisper=%dms)",
+                    text[:50] if text else "", confidence, capture_ms, whisper_ms
+                )
+                
                 self._publish_stt(text, confidence, capture_ms, whisper_ms)
                 
             except KeyboardInterrupt:
                 print("\nInterrupted by user", flush=True)
+                self.logger.info("Interrupted by user")
                 break
             except Exception as e:
                 print(f"Error in main loop: {e}", flush=True)
+                self.logger.error("Error in main loop: %s", e)
                 time.sleep(0.1)
+    
+    def _check_commands(self):
+        """Check for commands from orchestrator (non-blocking)."""
+        if not self.sub:
+            return
+        
+        try:
+            while True:
+                try:
+                    topic, data = self.sub.recv_multipart(flags=zmq.NOBLOCK)
+                    payload = json.loads(data)
+                    
+                    if topic == TOPIC_CMD_LISTEN_START:
+                        self._manual_trigger = True
+                        self.logger.debug("Received cmd.listen.start")
+                    elif topic == TOPIC_CMD_LISTEN_STOP:
+                        self._stop_capture = True
+                        self.logger.debug("Received cmd.listen.stop")
+                        
+                except zmq.Again:
+                    break  # No more messages
+        except Exception as e:
+            self.logger.warning("Error checking commands: %s", e)
 
 
 def main():

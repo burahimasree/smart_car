@@ -65,9 +65,9 @@ stt:
   mic_hw: smartcar_capture
   sample_rate: 16000
   language: en
-  silence_threshold: 0.15
+  silence_threshold: 0.25
   silence_duration_ms: 800
-  max_capture_seconds: 5
+  max_capture_seconds: 15
   min_confidence: 0.3  # Added: gate low-confidence transcripts
   runner_venv: ${PROJECT_ROOT}/.venvs/stte/bin/python
   mic_device: smartcar_capture
