@@ -427,28 +427,38 @@ class VoiceService:
                 pass
     
     def run(self):
-        """Main event loop."""
+        """Main event loop - Orchestrator-driven flow.
+        
+        Flow:
+        1. IDLE: Wait for wakeword
+        2. On wakeword: publish ww.detected, wait for cmd.listen.start
+        3. CAPTURING: Record until silence/timeout, check for wakeword interrupt
+        4. TRANSCRIBING: Run STT, publish stt.transcription
+        5. Return to IDLE
+        """
         chunk_ms = self.frame_length / TARGET_RATE * 1000
         silence_frames_needed = int(self.silence_duration_ms / chunk_ms)
         
         while self._running:
             try:
-                # Check for commands from orchestrator (non-blocking)
-                self._check_commands()
-                
-                # PHASE 1: Wait for wakeword OR manual trigger
+                # PHASE 1: Wait for wakeword
                 print("[IDLE] Listening for wakeword...", flush=True)
                 self.logger.info("IDLE: Waiting for wakeword")
+                self._manual_trigger = False
+                self._stop_capture = False
                 
-                while self._running:
-                    # Check for manual trigger command
+                wakeword_detected = False
+                while self._running and not wakeword_detected:
+                    # Check for manual trigger from orchestrator
                     self._check_commands()
                     if self._manual_trigger:
                         self._manual_trigger = False
                         self.stats["manual_triggers"] += 1
                         print("", flush=True)
                         print(f"🎯 MANUAL TRIGGER #{self.stats['manual_triggers']}!", flush=True)
-                        self.logger.info("Manual trigger received")
+                        self.logger.info("Manual trigger from orchestrator")
+                        # Go directly to capture (no need to wait for cmd.listen.start)
+                        wakeword_detected = True
                         break
                     
                     samples = self._read_and_resample()
@@ -459,6 +469,27 @@ class VoiceService:
                         print(f"🎯 WAKEWORD #{self.stats['wakeword_detections']}!", flush=True)
                         self.logger.info("Wakeword detected (#%d)", self.stats['wakeword_detections'])
                         self._publish_wakeword()
+                        
+                        # WAIT for orchestrator to send cmd.listen.start
+                        print("[WAITING] For orchestrator to start listening...", flush=True)
+                        self.logger.info("Waiting for cmd.listen.start from orchestrator")
+                        wait_start = time.time()
+                        wait_timeout = 2.0  # Max 2 seconds to wait
+                        
+                        while self._running and (time.time() - wait_start) < wait_timeout:
+                            self._check_commands()
+                            if self._manual_trigger:
+                                self._manual_trigger = False
+                                wakeword_detected = True
+                                self.logger.info("Received cmd.listen.start")
+                                break
+                            # Keep reading mic to prevent buffer overflow
+                            _ = self._read_and_resample()
+                        
+                        if not wakeword_detected:
+                            self.logger.warning("Timeout waiting for cmd.listen.start")
+                            # Continue to capture anyway (fallback)
+                            wakeword_detected = True
                         break
                 
                 if not self._running:
