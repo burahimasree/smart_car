@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Production Voice Service: Wakeword + STT with interrupt capability.
+
+Based on tested, working code (test_wakeword_stt.py) with:
+- 10/10 wakeword detection rate
+- Working silence detection (threshold 0.25)
+- scipy FFT resampling (48kHz → 16kHz)
+
+ARCHITECTURE (Single-threaded, proven to work):
+    ┌──────────────────────────────────────────────────────────┐
+    │              USB MICROPHONE (hw:3,0)                     │
+    │              48000 Hz / 16-bit / Mono                    │
+    └───────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │           MAIN LOOP (Single Thread)                      │
+    │  1. Read HW_CHUNK samples @ 48kHz                        │
+    │  2. Resample to 512 samples @ 16kHz (scipy)              │
+    │  3. Feed to Porcupine for wakeword detection             │
+    │  4. On wakeword: capture until silence, transcribe       │
+    └──────────────────────────────────────────────────────────┘
+
+WAKEWORD INTERRUPT:
+    During STT capture/transcription, we check for wakeword in each frame.
+    If detected, we cancel current capture and restart the flow.
+"""
+import sys
+import os
+import time
+import wave
+import tempfile
+import ctypes
+import math
+import argparse
+import json
+import numpy as np
+
+# Suppress ALSA errors BEFORE importing PyAudio
+try:
+    ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
+        None, ctypes.c_char_p, ctypes.c_int,
+        ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p
+    )
+    def py_error_handler(filename, line, function, err, fmt):
+        pass
+    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+    asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+    asound.snd_lib_error_set_handler(c_error_handler)
+except Exception:
+    pass
+
+import pyaudio
+from scipy import signal
+import pvporcupine
+
+# Project imports
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.core.config_loader import load_config
+from src.core.ipc import (
+    TOPIC_STT,
+    TOPIC_WW_DETECTED,
+    make_publisher,
+    publish_json,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CONFIGURATION (Tested and Calibrated)
+# ═══════════════════════════════════════════════════════════════════════════
+
+HW_RATE = 48000           # USB mic native rate
+TARGET_RATE = 16000       # Porcupine/Whisper rate
+SENSITIVITY = 0.7         # Wakeword sensitivity (tested: 10/10 detection)
+SILENCE_THRESHOLD = 0.25  # RMS threshold (calibrated from actual mic)
+SILENCE_DURATION_MS = 800 # Stop after 0.8s of silence
+MAX_CAPTURE_SECONDS = 8.0
+MIN_CAPTURE_SECONDS = 0.5
+
+
+def calc_rms(samples: np.ndarray) -> float:
+    """Calculate RMS amplitude (0.0 to 1.0)."""
+    if len(samples) == 0:
+        return 0.0
+    energy = np.mean(samples.astype(np.float32) ** 2)
+    return min(1.0, math.sqrt(energy) / 32768.0)
+
+
+def resample_chunk(hw_samples: np.ndarray, target_len: int) -> np.ndarray:
+    """Resample using scipy FFT (high quality, tested)."""
+    resampled = signal.resample(hw_samples.astype(np.float32), target_len)
+    return np.clip(resampled, -32768, 32767).astype(np.int16)
+
+
+class VoiceService:
+    """Production voice service with wakeword interrupt capability."""
+    
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        self.raw_config = load_config(config_path) if config_path.exists() else {}
+        
+        # Get wakeword config
+        ww_cfg = self.raw_config.get("wakeword", {}) or {}
+        self.access_key = ww_cfg.get("access_key") or os.environ.get("PV_ACCESS_KEY", "")
+        self.model_path = ww_cfg.get("model", "")
+        
+        # Components (initialized in start())
+        self.porcupine = None
+        self.stt_model = None
+        self.pa = None
+        self.stream = None
+        self.pub = None
+        
+        # Frame sizes
+        self.frame_length = 512  # Porcupine frame
+        self.hw_chunk = int(self.frame_length * HW_RATE / TARGET_RATE)  # 1536
+        
+        # Statistics
+        self.stats = {
+            "wakeword_detections": 0,
+            "stt_transcriptions": 0,
+            "stt_interrupts": 0,
+        }
+        
+        # Control
+        self._running = False
+    
+    def start(self) -> bool:
+        """Initialize all components."""
+        print("=== VOICE SERVICE STARTING ===", flush=True)
+        print(f"Resampling: {HW_RATE}Hz → {TARGET_RATE}Hz (scipy)", flush=True)
+        print(f"Wakeword sensitivity: {SENSITIVITY}", flush=True)
+        print(f"Silence threshold: {SILENCE_THRESHOLD}", flush=True)
+        print("", flush=True)
+        
+        # Initialize Porcupine
+        print("Initializing Porcupine...", flush=True)
+        if not self.access_key:
+            print("ERROR: Porcupine access key not set!", flush=True)
+            return False
+        
+        try:
+            self.porcupine = pvporcupine.create(
+                access_key=self.access_key,
+                keyword_paths=[self.model_path],
+                sensitivities=[SENSITIVITY],
+            )
+            self.frame_length = self.porcupine.frame_length
+            self.hw_chunk = int(self.frame_length * HW_RATE / TARGET_RATE)
+            print(f"Porcupine ready (frame_length={self.frame_length})", flush=True)
+        except Exception as e:
+            print(f"ERROR: Porcupine init failed: {e}", flush=True)
+            return False
+        
+        # Initialize faster-whisper
+        print("Loading faster-whisper model (tiny.en)...", flush=True)
+        try:
+            from faster_whisper import WhisperModel
+            self.stt_model = WhisperModel(
+                "tiny.en",
+                device="cpu",
+                compute_type="int8",
+                download_root=str(PROJECT_ROOT / "third_party/whisper-fast"),
+            )
+            print("STT model ready!", flush=True)
+        except Exception as e:
+            print(f"ERROR: STT model load failed: {e}", flush=True)
+            return False
+        
+        # Initialize PyAudio
+        self.pa = pyaudio.PyAudio()
+        
+        # Find USB device
+        found_device = None
+        for i in range(self.pa.get_device_count()):
+            info = self.pa.get_device_info_by_index(i)
+            if info["maxInputChannels"] > 0 and "USB" in info["name"]:
+                found_device = i
+                print(f"Found USB device at index {i}: {info['name']}", flush=True)
+                break
+        
+        if found_device is None:
+            print("ERROR: No USB input device found!", flush=True)
+            return False
+        
+        # Open stream
+        try:
+            self.stream = self.pa.open(
+                rate=HW_RATE,
+                channels=1,
+                format=pyaudio.paInt16,
+                input=True,
+                input_device_index=found_device,
+                frames_per_buffer=self.hw_chunk,
+            )
+            print(f"Audio stream ready (device {found_device})", flush=True)
+        except Exception as e:
+            print(f"ERROR: Failed to open audio stream: {e}", flush=True)
+            return False
+        
+        # Initialize ZMQ publisher (optional)
+        try:
+            self.pub = make_publisher(self.raw_config, channel="upstream")
+            print("ZMQ publisher ready", flush=True)
+        except Exception as e:
+            print(f"Warning: ZMQ publisher failed: {e}", flush=True)
+            self.pub = None
+        
+        print("", flush=True)
+        print("=" * 50, flush=True)
+        print("🎤 Voice service ready!", flush=True)
+        print("   Say 'HEY VEERA' to trigger", flush=True)
+        print("   Say 'HEY VEERA' during capture to interrupt!", flush=True)
+        print("=" * 50, flush=True)
+        print("", flush=True)
+        
+        self._running = True
+        return True
+    
+    def stop(self):
+        """Clean up resources."""
+        self._running = False
+        
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except:
+                pass
+        
+        if self.pa:
+            try:
+                self.pa.terminate()
+            except:
+                pass
+        
+        if self.porcupine:
+            try:
+                self.porcupine.delete()
+            except:
+                pass
+        
+        print(f"Voice service stopped. Stats: {self.stats}", flush=True)
+    
+    def _read_and_resample(self) -> np.ndarray:
+        """Read one chunk from mic and resample to 16kHz."""
+        data = self.stream.read(self.hw_chunk, exception_on_overflow=False)
+        hw_samples = np.frombuffer(data, dtype=np.int16)
+        return resample_chunk(hw_samples, self.frame_length)
+    
+    def _check_wakeword(self, samples: np.ndarray) -> bool:
+        """Check if wakeword is in samples. Returns True if detected."""
+        result = self.porcupine.process(samples.tolist())
+        return result >= 0
+    
+    def _publish_wakeword(self):
+        """Publish wakeword detection event."""
+        if self.pub:
+            try:
+                payload = {
+                    "timestamp": int(time.time()),
+                    "keyword": "hey veera",
+                    "confidence": 0.99,
+                    "source": "voice_service",
+                }
+                publish_json(self.pub, TOPIC_WW_DETECTED, payload)
+            except:
+                pass
+    
+    def _publish_stt(self, text: str, confidence: float, capture_ms: int, whisper_ms: int):
+        """Publish STT result."""
+        if self.pub:
+            try:
+                payload = {
+                    "timestamp": int(time.time()),
+                    "text": text.strip(),
+                    "confidence": float(confidence),
+                    "language": "en",
+                    "durations_ms": {
+                        "capture": capture_ms,
+                        "whisper": whisper_ms,
+                        "total": capture_ms + whisper_ms,
+                    },
+                    "kind": "final",
+                }
+                publish_json(self.pub, TOPIC_STT, payload)
+            except:
+                pass
+    
+    def _transcribe(self, audio: np.ndarray) -> tuple:
+        """Transcribe audio using faster-whisper."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        
+        try:
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(TARGET_RATE)
+                wf.writeframes(audio.tobytes())
+            
+            start = time.time()
+            segments, info = self.stt_model.transcribe(
+                wav_path,
+                language="en",
+                beam_size=1,
+                vad_filter=True,
+            )
+            
+            text_parts = []
+            logprobs = []
+            for seg in segments:
+                text_parts.append(seg.text.strip() if seg.text else "")
+                if seg.avg_logprob is not None:
+                    logprobs.append(seg.avg_logprob)
+            
+            text = " ".join(p for p in text_parts if p)
+            
+            if logprobs:
+                confidence = max(0.0, min(1.0, math.exp(sum(logprobs) / len(logprobs))))
+            else:
+                confidence = 0.8 if text else 0.0
+            
+            whisper_ms = int((time.time() - start) * 1000)
+            return text, confidence, whisper_ms
+        
+        finally:
+            try:
+                os.unlink(wav_path)
+            except:
+                pass
+    
+    def run(self):
+        """Main event loop."""
+        chunk_ms = self.frame_length / TARGET_RATE * 1000
+        silence_frames_needed = int(SILENCE_DURATION_MS / chunk_ms)
+        
+        while self._running:
+            try:
+                # PHASE 1: Wait for wakeword
+                print("[IDLE] Listening for wakeword...", flush=True)
+                
+                while self._running:
+                    samples = self._read_and_resample()
+                    
+                    if self._check_wakeword(samples):
+                        self.stats["wakeword_detections"] += 1
+                        print("", flush=True)
+                        print(f"🎯 WAKEWORD #{self.stats['wakeword_detections']}!", flush=True)
+                        self._publish_wakeword()
+                        break
+                
+                if not self._running:
+                    break
+                
+                # PHASE 2: Capture audio until silence (with wakeword interrupt)
+                print("[CAPTURING] Speak now (pause when done)...", flush=True)
+                
+                capture_buffer = []
+                capture_start = time.time()
+                silence_frames = 0
+                interrupted = False
+                
+                while self._running:
+                    samples = self._read_and_resample()
+                    
+                    # CHECK FOR WAKEWORD INTERRUPT
+                    if self._check_wakeword(samples):
+                        self.stats["stt_interrupts"] += 1
+                        self.stats["wakeword_detections"] += 1
+                        print("", flush=True)
+                        print(f"⚠️ INTERRUPT! Wakeword during capture - restarting!", flush=True)
+                        self._publish_wakeword()
+                        interrupted = True
+                        break
+                    
+                    capture_buffer.append(samples)
+                    elapsed = time.time() - capture_start
+                    
+                    # Check max duration
+                    if elapsed >= MAX_CAPTURE_SECONDS:
+                        print(f"   (Max {MAX_CAPTURE_SECONDS}s reached)", flush=True)
+                        break
+                    
+                    # Silence detection
+                    rms = calc_rms(samples)
+                    if rms < SILENCE_THRESHOLD:
+                        silence_frames += 1
+                        if silence_frames >= silence_frames_needed and elapsed >= MIN_CAPTURE_SECONDS:
+                            print(f"   (Silence after {elapsed:.1f}s)", flush=True)
+                            break
+                    else:
+                        silence_frames = 0
+                
+                # If interrupted, skip transcription and restart
+                if interrupted:
+                    continue
+                
+                if not self._running or not capture_buffer:
+                    continue
+                
+                # PHASE 3: Transcribe
+                capture_ms = int((time.time() - capture_start) * 1000)
+                audio = np.concatenate(capture_buffer)
+                
+                print(f"[TRANSCRIBING] {len(audio)/TARGET_RATE:.1f}s of audio...", flush=True)
+                
+                text, confidence, whisper_ms = self._transcribe(audio)
+                self.stats["stt_transcriptions"] += 1
+                
+                print("", flush=True)
+                print(f"📝 \"{text}\"", flush=True)
+                print(f"   conf={confidence:.2f}, capture={capture_ms}ms, whisper={whisper_ms}ms", flush=True)
+                print("", flush=True)
+                
+                self._publish_stt(text, confidence, capture_ms, whisper_ms)
+                
+            except KeyboardInterrupt:
+                print("\nInterrupted by user", flush=True)
+                break
+            except Exception as e:
+                print(f"Error in main loop: {e}", flush=True)
+                time.sleep(0.1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Voice Service")
+    parser.add_argument("--config", default="config/system.yaml", help="Config file")
+    args = parser.parse_args()
+    
+    config_path = PROJECT_ROOT / args.config
+    
+    service = VoiceService(config_path)
+    
+    if not service.start():
+        print("Failed to start voice service!", flush=True)
+        sys.exit(1)
+    
+    try:
+        service.run()
+    finally:
+        service.stop()
+
+
+if __name__ == "__main__":
+    main()

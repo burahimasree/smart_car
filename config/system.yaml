@@ -65,15 +65,15 @@ stt:
   mic_hw: smartcar_capture
   sample_rate: 16000
   language: en
-  silence_threshold: 0.20
-  silence_duration_ms: 1200
-  max_capture_seconds: 15
-  min_confidence: 0.5  # Added: gate low-confidence transcripts
+  silence_threshold: 0.15
+  silence_duration_ms: 800
+  max_capture_seconds: 5
+  min_confidence: 0.3  # Added: gate low-confidence transcripts
   runner_venv: ${PROJECT_ROOT}/.venvs/stte/bin/python
   mic_device: smartcar_capture
   # Safety timeout in seconds for a single listen session; if exceeded,
   # orchestrator cancels listening and resumes vision.
-  timeout_seconds: 15.0
+  timeout_seconds: 30.0
   engines:
     faster_whisper:
       model: tiny.en
@@ -102,6 +102,7 @@ tts:
   length_scale: 1.0
   bin_path: ${PROJECT_ROOT}/.venvs/ttse/bin/piper
   playback: aplay
+  playback_device: plughw:3,0
   # Optional Azure Text-to-Speech (cloud). To use it, run src/tts/azure_tts_runner.py
   # as the TTS service instead of piper_runner.
   azure:
