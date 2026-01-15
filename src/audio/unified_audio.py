@@ -72,7 +72,11 @@ class AudioConsumer:
 @dataclass
 class AudioConfig:
     """Configuration for the unified audio system."""
+    # Target sample rate for consumers (wakeword/STT). Many USB mics
+    # don't support 16 kHz directly, so capture can occur at
+    # hw_sample_rate and be resampled down to sample_rate.
     sample_rate: int = 16000
+    hw_sample_rate: Optional[int] = None
     channels: int = 1
     chunk_ms: int = 30  # ~512 samples at 16kHz for Porcupine
     buffer_seconds: float = 10.0  # Ring buffer duration
@@ -93,10 +97,14 @@ class UnifiedAudioCapture:
     def __init__(self, config: AudioConfig, logger=None) -> None:
         self.config = config
         self.logger = logger or self._default_logger()
+
+        self.target_rate = int(config.sample_rate)
+        self.hw_rate = int(config.hw_sample_rate or config.sample_rate)
         
         # Ring buffer sizing
-        self.chunk_samples = int(config.sample_rate * config.chunk_ms / 1000)
-        self.buffer_capacity = int(config.sample_rate * config.buffer_seconds)
+        self.chunk_samples = int(self.target_rate * config.chunk_ms / 1000)
+        self.hw_chunk_samples = int(self.hw_rate * config.chunk_ms / 1000)
+        self.buffer_capacity = int(self.target_rate * config.buffer_seconds)
         
         # Pre-allocate ring buffer (int16 PCM)
         self._ring = np.zeros(self.buffer_capacity, dtype=np.int16)
@@ -120,6 +128,51 @@ class UnifiedAudioCapture:
         self._pa: Optional["pyaudio.PyAudio"] = None
         self._stream = None
         self._hw_error: Optional[str] = None
+        self._actual_hw_rate: Optional[int] = None
+
+    @staticmethod
+    def _resample_int16_linear(samples: np.ndarray, src_rate: int, dst_rate: int, dst_len: int) -> np.ndarray:
+        """Lightweight linear resampler (int16 -> int16).
+
+        This avoids heavy dependencies (scipy) while being sufficient for
+        wakeword/STT front-end capture.
+        """
+        if src_rate == dst_rate:
+            return samples
+        if samples.size == 0:
+            return samples
+        x_src = np.linspace(0.0, 1.0, num=samples.size, endpoint=False)
+        x_dst = np.linspace(0.0, 1.0, num=dst_len, endpoint=False)
+        return np.interp(x_dst, x_src, samples.astype(np.float32)).astype(np.int16)
+
+    def _open_stream_with_rate_fallback(self, device_index: Optional[int]):
+        """Open input stream, falling back across common mic sample rates."""
+        # Prefer configured hw_rate first, then try a few common rates.
+        candidates = []
+        for r in (self.hw_rate, self.target_rate, 48000, 44100, 32000, 16000):
+            rr = int(r)
+            if rr not in candidates:
+                candidates.append(rr)
+        last_exc: Optional[Exception] = None
+        for rate in candidates:
+            try:
+                stream = self._pa.open(
+                    rate=rate,
+                    channels=self.config.channels,
+                    format=pyaudio.paInt16,
+                    input=True,
+                    input_device_index=device_index,
+                    frames_per_buffer=int(rate * self.config.chunk_ms / 1000),
+                )
+                self._actual_hw_rate = rate
+                self.hw_chunk_samples = int(rate * self.config.chunk_ms / 1000)
+                return stream
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Unable to open audio stream")
         
     def _default_logger(self):
         """Fallback logger if none provided."""
@@ -338,26 +391,25 @@ class UnifiedAudioCapture:
         try:
             self._pa = pyaudio.PyAudio()
             device_index = self._find_device()
-            
-            self._stream = self._pa.open(
-                rate=self.config.sample_rate,
-                channels=self.config.channels,
-                format=pyaudio.paInt16,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=self.chunk_samples,
-            )
+
+            self._stream = self._open_stream_with_rate_fallback(device_index)
+            hw_rate = int(self._actual_hw_rate or self.hw_rate)
+            hw_chunk = int(self.hw_chunk_samples)
             
             self.logger.info(
-                f"Capture started: rate={self.config.sample_rate}, "
-                f"chunk={self.chunk_samples}, device={device_index}"
+                "Capture started: hw_rate=%s target_rate=%s hw_chunk=%s target_chunk=%s device=%s",
+                hw_rate,
+                self.target_rate,
+                hw_chunk,
+                self.chunk_samples,
+                device_index,
             )
             self._started.set()
             
             while not self._stop_event.is_set():
                 try:
                     data = self._stream.read(
-                        self.chunk_samples,
+                        hw_chunk,
                         exception_on_overflow=False
                     )
                 except Exception as e:
@@ -365,7 +417,16 @@ class UnifiedAudioCapture:
                     time.sleep(0.01)
                     continue
                     
-                samples = np.frombuffer(data, dtype=np.int16)
+                hw_samples = np.frombuffer(data, dtype=np.int16)
+                if hw_rate != self.target_rate:
+                    samples = self._resample_int16_linear(
+                        hw_samples,
+                        src_rate=hw_rate,
+                        dst_rate=self.target_rate,
+                        dst_len=self.chunk_samples,
+                    )
+                else:
+                    samples = hw_samples
                 self._write_samples(samples)
                 self._invoke_callbacks(samples)
                 

@@ -302,6 +302,10 @@ def main() -> None:
                 append_setup_log(f"Published transcription: {payload}")
                 if args.debug:
                     print(json.dumps(payload, indent=2))
+                # ZMQ PUB sockets may drop messages if the process exits
+                # immediately after send; give it a moment to flush.
+                if not args.continuous:
+                    time.sleep(0.25)
             finally:
                 try:
                     wav_path.unlink()

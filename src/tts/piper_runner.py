@@ -46,13 +46,15 @@ def run() -> None:
         # Run piper and pipe to aplay
         cmd = f"{shlex.quote(str(bin_path))} -m {shlex.quote(str(model_path))} -f -"
         logger.info("Speaking %d chars", len(text))
+        # Use plughw:0,0 (BCM headphone jack) to avoid USB device conflict with mic capture
+        playback_device = tts.get("playback_device", "plughw:0,0")
         with subprocess.Popen(
             shlex.split(cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE
         ) as p_piper:
             assert p_piper.stdin is not None and p_piper.stdout is not None
             p_piper.stdin.write(text.encode("utf-8"))
             p_piper.stdin.close()
-            with subprocess.Popen([playback, "-q", "-f", "cd"], stdin=p_piper.stdout):
+            with subprocess.Popen([playback, "-q", "-D", playback_device], stdin=p_piper.stdout):
                 p_piper.wait()
         publish_json(pub, TOPIC_TTS, {"done": True, "timestamp": int(time.time())})
 

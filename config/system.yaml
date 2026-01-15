@@ -85,14 +85,11 @@ stt:
       model_path: ${PROJECT_ROOT}/models/whisper/ggml-small.en-q5_1.bin
       bin_path: ${PROJECT_ROOT}/third_party/whisper.cpp/build/bin/whisper-cli
     azure_speech:
-      region: ${ENV:AZURE_SPEECH_REGION}
-      endpoint: ${ENV:AZURE_SPEECH_ENDPOINT}
-      language: en-US
-      mic_device: default
-      min_confidence: 0.5
-    azure_speech:
+      # Azure Speech-to-Text (cloud)
+      # NOTE: YAML must not contain duplicate keys; keep a single azure_speech block.
       key: ${ENV:AZURE_SPEECH_KEY}
       region: ${ENV:AZURE_SPEECH_REGION}
+      # Optional full endpoint URL (can be used instead of region)
       endpoint: ${ENV:AZURE_SPEECH_ENDPOINT}
       language: en-US
       mic_device: default
@@ -105,6 +102,14 @@ tts:
   length_scale: 1.0
   bin_path: ${PROJECT_ROOT}/.venvs/ttse/bin/piper
   playback: aplay
+  # Optional Azure Text-to-Speech (cloud). To use it, run src/tts/azure_tts_runner.py
+  # as the TTS service instead of piper_runner.
+  azure:
+    voice: hi-IN-NeerajNeural
+    region: ${ENV:AZURE_SPEECH_REGION}
+    key: ${ENV:AZURE_SPEECH_KEY}
+    output: speakers   # speakers|wav
+    wav_path: run/tts_out.wav
 
 llm:
   engine: gemini
@@ -147,7 +152,7 @@ vision:
   target_fps: 15
 
 nav:
-  uart_device: /dev/ttyAMA0
+  uart_device: /dev/serial0
   baud_rate: 115200
   timeout: 1.0
   # Commands MUST match ESP32 esp-code.ino handleCommand() tokens

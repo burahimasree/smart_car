@@ -23,6 +23,7 @@ TOPIC_ESP = b"esp32.raw"
 TOPIC_HEALTH = b"system.health"
 TOPIC_CMD_LISTEN_START = b"cmd.listen.start"
 TOPIC_CMD_LISTEN_STOP = b"cmd.listen.stop"
+TOPIC_CMD_TTS_SPEAK = b"cmd.tts.speak"
 
 # Display state topics
 TOPIC_DISPLAY_STATE = b"display.state"  # Current UI state (idle, listening, thinking, speaking)

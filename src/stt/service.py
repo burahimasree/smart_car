@@ -31,6 +31,7 @@ from src.core.ipc import (
 )
 from src.core.logging_setup import get_logger
 from src.stt.faster_whisper_runner import load_fast_model, transcribe_fast
+from src.stt.azure_speech_runner import _import_speech_sdk, _extract_confidence
 
 
 # Native sample rate of USB mic - dsnoop runs at this rate
@@ -56,6 +57,7 @@ class STTService:
         self.silence_duration_ms = int(self.config.get("stt", {}).get("silence_duration_ms", 900))
         self.max_capture_seconds = float(self.config.get("stt", {}).get("max_capture_seconds", 10))
         self.language = self.config.get("stt", {}).get("language", "en")
+        self.engine = str(self.config.get("stt", {}).get("engine", "faster_whisper") or "faster_whisper").lower()
         self.mic_device = str(self.config.get("stt", {}).get("mic_device") or "smartcar_capture")
 
         # Open sounddevice stream with ALSA device NAME for dsnoop sharing
@@ -69,15 +71,24 @@ class STTService:
         self._stop_event = threading.Event()
         self._session_lock = threading.Lock()
         self._model = None
-        
-        # Preload whisper model at startup to avoid timeout on first request
-        self._ensure_model()
+
+        # Preload faster-whisper model at startup to avoid timeout on first request.
+        # (Azure STT is cloud-based and doesn't need local model warmup.)
+        if self.engine in {"faster_whisper", "whisper_fast", "whisperfast"}:
+            self._ensure_model()
 
     # --------------------- public API ---------------------
 
     def run(self) -> None:
-        self.logger.info("STT service running (native=%dHz, target=%dHz, device=%s, model=loaded)", 
-                        NATIVE_SAMPLE_RATE, TARGET_SAMPLE_RATE, self.mic_device)
+        model_status = "loaded" if self._model is not None else "n/a"
+        self.logger.info(
+            "STT service running (engine=%s native=%dHz, target=%dHz, device=%s, model=%s)",
+            self.engine,
+            NATIVE_SAMPLE_RATE,
+            TARGET_SAMPLE_RATE,
+            self.mic_device,
+            model_status,
+        )
         while True:
             topic, raw = self.cmd_sub.recv_multipart()
             if topic == TOPIC_CMD_LISTEN_START:
@@ -180,10 +191,59 @@ class STTService:
         publish_json(self.publisher, TOPIC_STT, payload)
 
     def _transcribe(self, wav_path: Path) -> tuple[int, str, float]:
+        if self.engine == "azure_speech":
+            return self._transcribe_azure_wav(wav_path)
         self._ensure_model()
         start = time.time()
         text, confidence = transcribe_fast(self._model, wav_path, self.language)
         return int((time.time() - start) * 1000), text.strip(), float(confidence)
+
+    def _transcribe_azure_wav(self, wav_path: Path) -> tuple[int, str, float]:
+        stt_cfg = self.config.get("stt", {}) or {}
+        engines_cfg = (stt_cfg.get("engines") or {}).get("azure_speech", {}) or {}
+        speech_key = engines_cfg.get("key") or os.environ.get("AZURE_SPEECH_KEY")
+        region = engines_cfg.get("region") or os.environ.get("AZURE_SPEECH_REGION")
+        endpoint = engines_cfg.get("endpoint") or os.environ.get("AZURE_SPEECH_ENDPOINT")
+        language = engines_cfg.get("language") or (self.language if "-" in str(self.language) else "en-US")
+
+        if not speech_key:
+            raise RuntimeError(
+                "Azure Speech key not configured (set stt.engines.azure_speech.key or AZURE_SPEECH_KEY)"
+            )
+        if not (region or endpoint):
+            raise RuntimeError(
+                "Azure Speech region/endpoint not configured (set stt.engines.azure_speech.region or AZURE_SPEECH_REGION/AZURE_SPEECH_ENDPOINT)"
+            )
+
+        start = time.time()
+        speechsdk = _import_speech_sdk()
+        if endpoint:
+            speech_config = speechsdk.SpeechConfig(subscription=str(speech_key), endpoint=str(endpoint))
+        else:
+            speech_config = speechsdk.SpeechConfig(subscription=str(speech_key), region=str(region))
+        speech_config.speech_recognition_language = str(language)
+
+        audio_config = speechsdk.audio.AudioConfig(filename=str(wav_path))
+        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+        result = recognizer.recognize_once_async().get()
+
+        ms = int((time.time() - start) * 1000)
+        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            text = (result.text or "").strip()
+            confidence = _extract_confidence(speechsdk, result) or 0.9
+            return ms, text, float(confidence)
+        if result.reason == speechsdk.ResultReason.NoMatch:
+            self.logger.info("Azure STT NoMatch: %s", getattr(result, "no_match_details", ""))
+            return ms, "", 0.0
+        if result.reason == speechsdk.ResultReason.Canceled:
+            cancellation = result.cancellation_details
+            self.logger.error("Azure STT canceled: %s", getattr(cancellation, "reason", "unknown"))
+            details = getattr(cancellation, "error_details", None)
+            if details:
+                self.logger.error("Azure STT error_details: %s", details)
+            return ms, "", 0.0
+        self.logger.warning("Azure STT unexpected result: %s", result.reason)
+        return ms, "", 0.0
 
     def _ensure_model(self) -> None:
         if self._model is not None:

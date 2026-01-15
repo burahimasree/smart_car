@@ -29,6 +29,9 @@ import pygame
 os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
 os.environ.setdefault("SDL_MOUSEDEV", "/dev/input/event0")
 os.environ.setdefault("SDL_MOUSEDRV", "TSLIB")
+# This UI doesn't need audio, but SDL/pygame will try to initialize it by default.
+# On systems where the default ALSA device is shared with TTS, this can block audio playback.
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 
 BLACK = (0, 0, 0)
@@ -595,6 +598,10 @@ def main() -> None:
         os.environ.pop("SDL_FBDEV", None)
 
     pygame.init()
+    try:
+        pygame.mixer.quit()
+    except Exception:
+        pass
     screen: pygame.Surface | None = None
     fb_writer: FramebufferWriter | None = None
 

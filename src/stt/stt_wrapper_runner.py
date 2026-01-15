@@ -137,7 +137,13 @@ class STTWrapper:
             "kind": "final",
         }
         self.logger.info("STT wrapper (sim) publishing transcription: %s", payload["text"])
-        publish_json(self.up_pub, TOPIC_STT, payload)
+
+        # Similar to the wakeword sim mode, publish a few times to avoid
+        # PUB/SUB subscription propagation races in tests.
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            publish_json(self.up_pub, TOPIC_STT, payload)
+            time.sleep(0.05)
 
     # ------------------------ STT backend ------------------------
 

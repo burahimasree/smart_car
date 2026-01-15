@@ -112,8 +112,10 @@ class UnifiedVoicePipeline:
         self.voice_cfg = self._parse_config()
         
         # Initialize audio capture
+        raw_audio_cfg = self.raw_config.get("audio", {}) or {}
         audio_cfg = AudioConfig(
             sample_rate=self.voice_cfg.sample_rate,
+            hw_sample_rate=int(raw_audio_cfg.get("hw_sample_rate", self.voice_cfg.sample_rate)),
             chunk_ms=self.voice_cfg.chunk_ms,
             device_keyword=self.raw_config.get("audio", {}).get("preferred_device_substring", ""),
         )
@@ -175,9 +177,10 @@ class UnifiedVoicePipeline:
             wakeword_sensitivity=float(ww_cfg.get("sensitivity", 0.6)),
             wakeword_model_path=model_path,
             pv_access_key=access_key,
-            silence_threshold=float(stt_cfg.get("silence_threshold", 0.35)),
-            silence_duration_ms=int(stt_cfg.get("silence_duration_ms", 900)),
-            max_capture_seconds=float(stt_cfg.get("max_capture_seconds", 10.0)),
+            silence_threshold=float(stt_cfg.get("silence_threshold", 0.25)),
+            silence_duration_ms=int(stt_cfg.get("silence_duration_ms", 1200)),
+            max_capture_seconds=float(stt_cfg.get("max_capture_seconds", 15.0)),
+            min_capture_seconds=float(stt_cfg.get("min_capture_seconds", 1.0)),
             stt_language=stt_cfg.get("language", "en"),
             stt_model=fw_cfg.get("model", "tiny.en"),
             stt_compute_type=fw_cfg.get("compute_type", "int8"),
@@ -206,6 +209,12 @@ class UnifiedVoicePipeline:
         # Register consumers
         self.audio.register_consumer(self._wakeword_consumer_id, priority=5)
         self.audio.register_consumer(self._stt_consumer_id, priority=10)
+        
+        # Preload STT model at startup to eliminate first-transcription delay
+        try:
+            self._ensure_stt_model()
+        except Exception as e:
+            self.logger.warning(f"STT preload failed (will retry on first use): {e}")
         
         self.logger.info("Voice pipeline started successfully")
         return True
@@ -511,7 +520,8 @@ class UnifiedVoicePipeline:
                 str(wav_path),
                 language=self.voice_cfg.stt_language,
                 beam_size=self.voice_cfg.stt_beam_size,
-                vad_filter=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
             )
             
             text_parts = []

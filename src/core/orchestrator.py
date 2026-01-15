@@ -206,6 +206,10 @@ class Orchestrator:
         if isinstance(intent_payload, str) and intent_payload.lower().startswith("navigate"):
             return intent_payload.split(":")[-1].strip().lower() if ":" in intent_payload else "forward"
         if isinstance(intent_payload, dict):
+            # Preferred: direct direction field from LLM JSON schema
+            direct = intent_payload.get("direction")
+            if isinstance(direct, str) and direct.strip():
+                return direct.strip().lower()
             if intent_payload.get("intent") == "navigate":
                 slots = intent_payload.get("slots", {})
                 return str(slots.get("direction", "forward")).lower()

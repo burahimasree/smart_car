@@ -170,8 +170,8 @@ def speak(text: str) -> None:
     """Speak text using Piper TTS."""
     print("\n🔊 Speaking...")
     
-    piper_bin = Path("/home/dev/project_root/.venvs/ttse/bin/piper")
-    model_path = Path("/home/dev/project_root/models/piper/en_US-amy-medium.onnx")
+    piper_bin = Path("/home/dev/smart_car/.venvs/ttse/bin/piper")
+    model_path = Path("/home/dev/smart_car/models/piper/en_US-amy-medium.onnx")
     
     if not piper_bin.exists() or not model_path.exists():
         print(f"❌ Piper not found")
@@ -191,7 +191,7 @@ def speak(text: str) -> None:
         
         if proc.returncode == 0:
             # Play audio
-            subprocess.run(["aplay", "-D", "plughw:3,0", wav_path], capture_output=True)
+            subprocess.run(["aplay", "-D", "plughw:0,0", wav_path], capture_output=True)
             print("✅ Done speaking")
         else:
             print(f"❌ TTS error: {proc.stderr}")

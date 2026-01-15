@@ -173,9 +173,15 @@ def run_sim(pub: zmq.Socket, after: float, keyword: str, variant: str) -> None:
     late-subscribing test still receives at least one payload.
     """
     time.sleep(after)
-    for _ in range(5):
+    # ZMQ PUB/SUB can drop early messages until the subscription handshake
+    # completes. In sim mode, publish repeatedly for a short window so tests
+    # reliably observe at least one ww.detected event.
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
         publish_detected(pub, 0.98, "sim", keyword, variant)
-        time.sleep(0.05)
+        time.sleep(0.1)
+    # Give ZMQ a brief moment to flush the last message before the process exits.
+    time.sleep(0.25)
 
 
 def try_import_porcupine() -> Optional[Any]:
