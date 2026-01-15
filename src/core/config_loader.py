@@ -15,15 +15,28 @@ from dataclasses import dataclass
 from enum import Enum
 
 try:  # Local imports deferred to avoid circulars in test bootstrap
-    from src.tts.engine import TTSConfig  # type: ignore
-    from src.llm.llama_wrapper import LlamaConfig  # type: ignore
     from src.vision.detector import VisionConfig  # type: ignore
     from pathlib import Path as _PathAlias  # for type hints only
 except Exception:  # pragma: no cover - tests will still succeed via fallbacks
-    TTSConfig = object  # type: ignore
-    LlamaConfig = object  # type: ignore
     VisionConfig = object  # type: ignore
     _PathAlias = Path
+
+# Placeholder dataclasses for legacy typed config loader (TTSConfig, LlamaConfig deleted)
+@dataclass(slots=True)
+class TTSConfig:
+    voice: str = "en-us-amy-medium"
+    model_path: Path = Path("missing")
+    sample_rate: int = 22050
+    noise_scale: float = 0.6
+    length_scale: float = 1.0
+
+
+@dataclass(slots=True)
+class LlamaConfig:
+    model_path: Path = Path("missing")
+    context_tokens: int = 2048
+    gpu_layers: int = 0
+    threads: int = 4
 
 try:
     import yaml

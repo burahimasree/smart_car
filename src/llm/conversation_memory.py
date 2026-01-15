@@ -114,7 +114,7 @@ class ConversationMemory:
     """
     
     # System prompt template for the robot assistant
-    SYSTEM_PROMPT_TEMPLATE = '''You are GENNY, an AI assistant controlling a physical robot car with camera and motors.
+    SYSTEM_PROMPT_TEMPLATE = '''You are VEERA, an AI assistant controlling a physical robot car with camera and motors.
 
 ## YOUR CAPABILITIES:
 - Move: forward, backward, left, right, stop
@@ -274,7 +274,7 @@ class ConversationMemory:
         
         # Add recent messages
         for msg in self._messages:
-            prefix = "User" if msg.role == "user" else "GENNY"
+            prefix = "User" if msg.role == "user" else "VEERA"
             conversation_parts.append(f"{prefix}: {msg.content}")
         
         conversation_summary = "\n".join(conversation_parts) if conversation_parts else "This is the start of the conversation."

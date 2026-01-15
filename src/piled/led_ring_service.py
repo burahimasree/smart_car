@@ -1,11 +1,20 @@
-"""Orchestrator-aware LED ring controller for the 8-pixel NeoPixel ring.
+"""Phase-driven LED ring controller: LED = f(Phase).
 
-This service listens to upstream (wakeword/STT/LLM/TTS/health) and
- downstream (command) ZeroMQ topics so the hardware reflects which stage
- of the voice pipeline is currently active. It replaces the legacy
- `src.ui.led_status_runner` implementation and is designed to run under
- the `.venvs/visn` virtual environment where the NeoPixel stack is pre-
- installed.
+ARCHITECTURE:
+    LED state is derived SOLELY from TOPIC_DISPLAY_STATE.
+    No internal flags. No inference from other topics.
+    The orchestrator publishes phase, we render it.
+
+LED STATES (1:1 with orchestrator Phase):
+    idle      - Gentle cyan pulse (system ready)
+    listening - Blue sweep (capturing audio)
+    thinking  - Purple pulse (LLM processing)
+    speaking  - Green pulse (TTS playing)
+    error     - Red blink (system error)
+
+DESIGN PRINCIPLE:
+    If a human cannot tell what the system is doing
+    by looking at the LEDs alone, the design is WRONG.
 """
 from __future__ import annotations
 
@@ -15,7 +24,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Optional
 
 import zmq
 
@@ -27,17 +36,7 @@ except Exception:  # pragma: no cover - desktop devs
     neopixel = None  # type: ignore
 
 from src.core.config_loader import load_config
-from src.core.ipc import (
-    TOPIC_CMD_LISTEN_START,
-    TOPIC_CMD_LISTEN_STOP,
-    TOPIC_HEALTH,
-    TOPIC_LLM_REQ,
-    TOPIC_LLM_RESP,
-    TOPIC_STT,
-    TOPIC_TTS,
-    TOPIC_WW_DETECTED,
-    make_subscriber,
-)
+from src.core.ipc import TOPIC_DISPLAY_STATE, TOPIC_HEALTH, make_subscriber
 from src.core.logging_setup import get_logger
 
 
@@ -119,52 +118,38 @@ class LedRingHardware:
 
 
 class LedAnimator:
-    """Generates color frames for each orchestrator state."""
+    """Generates color frames for each phase state.
+    
+    LED = f(Phase). Each phase has a distinct, human-recognizable pattern.
+    """
 
     def __init__(self, hardware: LedRingHardware) -> None:
         self.hw = hardware
         self.current_state = "idle"
-        self.desired_state = "idle"
-        self._fallback_deadline: Optional[float] = None
-        self._fallback_state: str = "idle"
         self._last_render = 0.0
 
-    def set_state(self, state: str, *, hold: Optional[float] = None, fallback: Optional[str] = None) -> None:
-        self.desired_state = state
-        if state == self.current_state and hold is None:
-            return
-        self.current_state = state
-        if hold:
-            self._fallback_deadline = time.time() + hold
-            self._fallback_state = fallback or "idle"
-        else:
-            self._fallback_deadline = None
-        self._last_render = 0.0  # force immediate refresh
-
-    def _maybe_fallback(self, now: float) -> None:
-        if self._fallback_deadline and now >= self._fallback_deadline:
-            self._fallback_deadline = None
-            self.set_state(self._fallback_state)
+    def set_state(self, state: str) -> None:
+        """Set LED state. Only changes on actual state change."""
+        if state != self.current_state:
+            self.current_state = state
+            self._last_render = 0.0  # Force immediate refresh
 
     def step(self, now: float) -> None:
+        """Render current state at 60fps."""
         if now - self._last_render < 1.0 / 60.0:
             return
-        self._maybe_fallback(now)
         renderer = getattr(self, f"_render_{self.current_state}", self._render_idle)
         renderer(now)
         self._last_render = now
 
     def _render_idle(self, now: float) -> None:
+        """IDLE: Gentle cyan pulse - system is ready and listening for wakeword."""
         phase = 0.5 + 0.5 * math.sin(now * 1.5)
         level = int(8 + 40 * phase)
         self.hw.fill((0, level, level + 5))
 
-    def _render_wakeword(self, now: float) -> None:
-        on = int(now * 8) % 2 == 0
-        color = (120, 70, 0) if on else (0, 0, 0)
-        self.hw.fill(color)
-
     def _render_listening(self, now: float) -> None:
+        """LISTENING: Blue sweep - actively capturing audio."""
         pos = (now * 6) % self.hw.pixel_count
         colors: list[RGB] = []
         for idx in range(self.hw.pixel_count):
@@ -174,33 +159,36 @@ class LedAnimator:
             colors.append((0, 0, value))
         self.hw.show(colors)
 
-    def _render_llm(self, now: float) -> None:
+    def _render_thinking(self, now: float) -> None:
+        """THINKING: Purple pulse - LLM is processing."""
         colors: list[RGB] = []
         for idx in range(self.hw.pixel_count):
             phase = math.sin(now * 2 + idx)
             colors.append((int(50 + 40 * phase), int(5 + 15 * phase), int(90 + 60 * (1 - phase))))
         self.hw.show(colors)
 
-    def _render_tts_queue(self, now: float) -> None:
-        # Short loader before audio starts
-        sweep = (now * 5) % self.hw.pixel_count
-        colors: list[RGB] = []
-        for idx in range(self.hw.pixel_count):
-            hit = 1.0 - min(abs(idx - sweep), self.hw.pixel_count - abs(idx - sweep)) / self.hw.pixel_count
-            colors.append((int(20 + 80 * hit), int(40 + 80 * hit), 0))
-        self.hw.show(colors)
-
     def _render_speaking(self, now: float) -> None:
+        """SPEAKING: Green pulse - TTS is playing."""
         phase = 0.5 + 0.5 * math.sin(now * 4)
         level = int(40 + 150 * phase)
         self.hw.fill((0, level, 10))
 
     def _render_error(self, now: float) -> None:
+        """ERROR: Red blink - something is wrong."""
         on = int(now * 4) % 2 == 0
         self.hw.fill((150, 0, 0) if on else (0, 0, 0))
 
 
 class LedRingService:
+    """Phase-driven LED service: LED = f(Phase).
+    
+    SINGLE SOURCE OF TRUTH: TOPIC_DISPLAY_STATE
+    
+    This service subscribes ONLY to display state updates from the orchestrator.
+    NO internal flags. NO inference from other topics.
+    The orchestrator tells us the phase, we render it. Period.
+    """
+
     def __init__(
         self,
         *,
@@ -226,99 +214,44 @@ class LedRingService:
         )
         self.animator = LedAnimator(self.hardware)
         self.animator.set_state("idle")
-        self.desired_state = "idle"
-        self.flags: Dict[str, bool] = {
-            "stt_active": False,
-            "llm_active": False,
-            "tts_active": False,
-            "error": False,
-        }
 
+        # SINGLE SUBSCRIBER: display state from orchestrator
         self.ctx = zmq.Context.instance()
-        self.sub_upstream = self._make_subscriber(
-            "upstream",
-            [TOPIC_WW_DETECTED, TOPIC_STT, TOPIC_LLM_RESP, TOPIC_TTS, TOPIC_HEALTH],
-        )
-        self.sub_downstream = self._make_subscriber(
-            "downstream",
-            [TOPIC_CMD_LISTEN_START, TOPIC_CMD_LISTEN_STOP, TOPIC_LLM_REQ, TOPIC_TTS],
-        )
+        self.sub = make_subscriber(self.config, channel="upstream", topic=TOPIC_DISPLAY_STATE)
+        # Also subscribe to health for system errors
+        self.sub.setsockopt(zmq.SUBSCRIBE, TOPIC_HEALTH)
+        
         self.poller = zmq.Poller()
-        self.poller.register(self.sub_upstream, zmq.POLLIN)
-        self.poller.register(self.sub_downstream, zmq.POLLIN)
+        self.poller.register(self.sub, zmq.POLLIN)
+        
+        self._in_error = False
 
-    def _make_subscriber(self, channel: str, topics: Iterable[bytes]) -> zmq.Socket:
-        topics = list(topics)
-        first = topics[0] if topics else b""
-        sock = make_subscriber(self.config, channel=channel, topic=first)
-        for topic in topics[1:]:
-            sock.setsockopt(zmq.SUBSCRIBE, topic)
-        return sock
+    def _handle_display_state(self, payload: dict) -> None:
+        """LED = f(Phase). This is THE ONLY state source."""
+        if self._in_error:
+            return  # Error state takes priority
+        state = payload.get("state", "idle")
+        self.logger.debug("Display state: %s", state)
+        self.animator.set_state(state)
 
-    def _set_state(self, state: str, *, hold: Optional[float] = None, fallback: Optional[str] = None) -> None:
-        self.desired_state = state
-        if self.flags.get("error"):
-            return
-        self.animator.set_state(state, hold=hold, fallback=fallback)
+    def _handle_health(self, payload: dict) -> None:
+        """Health errors override display state."""
+        ok = payload.get("ok", True)
+        if not ok and not self._in_error:
+            self._in_error = True
+            self.logger.error("Health error: %s", payload)
+            self.animator.set_state("error")
+        elif ok and self._in_error:
+            self._in_error = False
+            self.logger.info("Health restored")
+            # Return to idle; orchestrator will send correct state
+            self.animator.set_state("idle")
 
-    def _enter_error(self, reason: Dict[str, Any]) -> None:
-        if self.flags["error"]:
-            return
-        self.flags["error"] = True
-        self.logger.error("Health error: %s", reason)
-        self.animator.set_state("error")
-
-    def _clear_error(self) -> None:
-        if not self.flags["error"]:
-            return
-        self.flags["error"] = False
-        self.logger.info("Health restored; returning to %s", self.desired_state)
-        self.animator.set_state(self.desired_state)
-
-    def _handle_upstream(self, topic: bytes, payload: Dict[str, Any]) -> None:
-        if topic == TOPIC_WW_DETECTED:
-            self.logger.info("Wakeword detected")
-            self._set_state("wakeword", hold=1.2, fallback="listening")
-        elif topic == TOPIC_STT:
-            # STT result implies LLM will run next
-            self.flags["llm_active"] = True
-            self._set_state("llm")
-        elif topic == TOPIC_LLM_RESP:
-            self.flags["llm_active"] = False
-            if self.flags["tts_active"]:
-                self._set_state("speaking")
-            else:
-                self._set_state("tts_queue", hold=1.0)
-        elif topic == TOPIC_TTS:
-            if payload.get("done"):
-                self.flags["tts_active"] = False
-                self._set_state("idle")
-        elif topic == TOPIC_HEALTH:
-            if not bool(payload.get("ok", True)):
-                self._enter_error(payload)
-            else:
-                self._clear_error()
-
-    def _handle_downstream(self, topic: bytes, payload: Dict[str, Any]) -> None:
-        if topic == TOPIC_CMD_LISTEN_START:
-            self.flags["stt_active"] = True
-            self._set_state("listening")
-        elif topic == TOPIC_CMD_LISTEN_STOP:
-            self.flags["stt_active"] = False
-            if not self.flags["llm_active"] and not self.flags["tts_active"]:
-                self._set_state("idle")
-        elif topic == TOPIC_LLM_REQ:
-            self.flags["llm_active"] = True
-            self._set_state("llm")
-        elif topic == TOPIC_TTS:
-            if payload.get("text"):
-                self.flags["tts_active"] = True
-                self._set_state("tts_queue", hold=0.5, fallback="speaking")
-
-    def _drain(self, sock: zmq.Socket, *, upstream: bool) -> None:
+    def _drain(self) -> None:
+        """Process all pending messages."""
         while True:
             try:
-                topic, data = sock.recv_multipart(flags=zmq.NOBLOCK)
+                topic, data = self.sub.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
                 break
             try:
@@ -326,20 +259,20 @@ class LedRingService:
             except json.JSONDecodeError:
                 self.logger.error("Invalid JSON on topic %s", topic)
                 continue
-            if upstream:
-                self._handle_upstream(topic, payload)
-            else:
-                self._handle_downstream(topic, payload)
+            
+            if topic == TOPIC_DISPLAY_STATE:
+                self._handle_display_state(payload)
+            elif topic == TOPIC_HEALTH:
+                self._handle_health(payload)
 
     def run(self) -> None:
-        self.logger.info("LED ring service running")
+        """Main loop: poll for state updates, render animations."""
+        self.logger.info("LED ring service running (phase-driven mode)")
         try:
             while True:
                 events = dict(self.poller.poll(50))
-                if self.sub_upstream in events:
-                    self._drain(self.sub_upstream, upstream=True)
-                if self.sub_downstream in events:
-                    self._drain(self.sub_downstream, upstream=False)
+                if self.sub in events:
+                    self._drain()
                 self.animator.step(time.time())
         except KeyboardInterrupt:
             self.logger.info("LED ring service interrupted")

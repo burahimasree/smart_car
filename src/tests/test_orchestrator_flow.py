@@ -69,7 +69,7 @@ def test_orchestrator_sequence():
         pub_events.send_multipart([topic, json.dumps(payload).encode("utf-8")])
 
     # 1. Wakeword event
-    send(TOPIC_WW_DETECTED, {"timestamp": int(time.time()), "keyword": "genny", "variant": "genny", "confidence": 0.99, "source": "porcupine"})
+    send(TOPIC_WW_DETECTED, {"timestamp": int(time.time()), "keyword": "veera", "variant": "veera", "confidence": 0.99, "source": "porcupine"})
     pause_seen = listen_start_seen = False
 
     poller = zmq.Poller()

@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover
     serial = None
 
 
-logger = get_logger("uart.bridge")
+logger = get_logger("uart.bridge", Path("logs"))
 
 
 def run() -> None:

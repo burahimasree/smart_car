@@ -1,1 +1,0 @@
-"""Wakeword service package."""

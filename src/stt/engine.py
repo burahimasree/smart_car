@@ -13,7 +13,6 @@ from typing import Any, Dict, Optional
 
 RUNNER_SCRIPTS: Dict[str, str] = {
     "faster_whisper": "src/stt/faster_whisper_runner.py",
-    "whispercpp": "src/stt/whisper_runner.py",
     "azure_speech": "src/stt/azure_speech_runner.py",
 }
 DEFAULT_ENGINE = "faster_whisper"

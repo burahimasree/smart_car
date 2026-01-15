@@ -109,7 +109,7 @@ time.sleep(0.5)
 def send(topic, payload):
     pub.send_multipart([topic, json.dumps(payload).encode("utf-8")])
 
-send(b"ww.detected", {"timestamp": int(time.time()), "keyword": "genny", "confidence": 0.99})
+send(b"ww.detected", {"timestamp": int(time.time()), "keyword": "veera", "confidence": 0.99})
 time.sleep(0.5)
 send(b"stt.transcription", {"timestamp": int(time.time()), "text": "What is 2+2?", "confidence": 0.95, "language": "en"})
 PY

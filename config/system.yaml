@@ -41,19 +41,19 @@ wakeword:
   access_key_path: ${HOME}/.config/pi-assistant/pv_access_key
   sensitivity: 0.75
   sim_mode: false
-  payload_keyword: "hey genny"
-  payload_variant: "genny"
+  payload_keyword: "hey veera"
+  payload_variant: "veera"
   keywords:
-    - hey genny
-    - genny
-    - genney
-    - hi genny
-    - genie
-    - jenni
+    - hey veera
+    - veera
+    - vira
+    - hi veera
+    - vera
+    - viera
   model: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
   model_paths:
     porcupine_keyword: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
-    tflite_model: ${PROJECT_ROOT}/models/wakeword/genny.tflite
+    tflite_model: ${PROJECT_ROOT}/models/wakeword/veera.tflite
   stte_venv: ${PROJECT_ROOT}/.venvs/stte
   fallback_engine: pytorch
   # Use shared ALSA dsnoop device configured via /etc/asound.conf
@@ -136,7 +136,7 @@ llm:
   conversation_timeout_s: 120
   
   # Robot assistant name (used in system prompt)
-  assistant_name: GENNY
+  assistant_name: VEERA
 
 vision:
   model_path_onnx: ${PROJECT_ROOT}/models/vision/yolo11n.onnx
