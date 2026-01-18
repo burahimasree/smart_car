@@ -97,9 +97,10 @@ HW_RATE = 48000           # USB mic native rate
 TARGET_RATE = 16000       # Porcupine/Whisper rate
 SENSITIVITY = 0.7         # Wakeword sensitivity (tested: 10/10 detection)
 SILENCE_THRESHOLD = 0.25  # RMS threshold (calibrated from actual mic)
-SILENCE_DURATION_MS = 800 # Stop after 0.8s of silence
+SILENCE_DURATION_MS = 1200 # Stop after 1.2s of silence (was 0.8s)
 MAX_CAPTURE_SECONDS = 15.0  # INCREASED: 15s max for noisy environments
-MIN_CAPTURE_SECONDS = 0.5
+MIN_CAPTURE_SECONDS = 1.5   # Give user time to speak (was 0.5s)
+MIN_SPEECH_FRAMES = 3       # Must detect speech before silence can end capture
 
 
 def calc_rms(samples: np.ndarray) -> float:
@@ -219,6 +220,7 @@ class VoiceService:
                 "tiny.en",
                 device="cpu",
                 compute_type="int8",
+                cpu_threads=4,  # Use all 4 cores on Pi4
                 download_root=str(PROJECT_ROOT / "third_party/whisper-fast"),
             )
             print("STT model ready!", flush=True)
@@ -502,6 +504,7 @@ class VoiceService:
                 capture_buffer = []
                 capture_start = time.time()
                 silence_frames = 0
+                speech_frames = 0  # Track frames with speech detected
                 interrupted = False
                 self._stop_capture = False
                 
@@ -535,16 +538,23 @@ class VoiceService:
                         self.logger.info("Max capture duration reached (%.1fs)", self.max_capture_seconds)
                         break
                     
-                    # Silence detection
+                    # Silence/Speech detection
                     rms = calc_rms(samples)
                     if rms < self.silence_threshold:
                         silence_frames += 1
-                        if silence_frames >= silence_frames_needed and elapsed >= MIN_CAPTURE_SECONDS:
-                            print(f"   (Silence after {elapsed:.1f}s)", flush=True)
-                            self.logger.info("Silence detected after %.1fs", elapsed)
+                        # Only allow silence to end capture if:
+                        # 1. Enough silence frames accumulated
+                        # 2. Minimum capture time elapsed  
+                        # 3. SPEECH WAS DETECTED (prevents premature stop)
+                        if (silence_frames >= silence_frames_needed and 
+                            elapsed >= MIN_CAPTURE_SECONDS and
+                            speech_frames >= MIN_SPEECH_FRAMES):
+                            print(f"   (Silence after {elapsed:.1f}s, {speech_frames} speech frames)", flush=True)
+                            self.logger.info("Silence detected after %.1fs (speech_frames=%d)", elapsed, speech_frames)
                             break
                     else:
                         silence_frames = 0
+                        speech_frames += 1  # Count frames with audio above threshold
                 
                 # If interrupted or stopped, skip transcription and restart
                 if interrupted or self._stop_capture:

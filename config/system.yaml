@@ -2,6 +2,12 @@ ipc:
   upstream: ${IPC_UPSTREAM:-tcp://127.0.0.1:6010}   # module → orchestrator
   downstream: ${IPC_DOWNSTREAM:-tcp://127.0.0.1:6011} # orchestrator → modules
 
+orchestrator:
+  # Auto-trigger: when enabled, starts listening after idle period
+  # Disabled because it triggers on background noise when no one is speaking
+  auto_trigger_enabled: false
+  auto_trigger_interval: 60.0
+
 audio:
   # ═══════════════════════════════════════════════════════════════════════════
   # UNIFIED AUDIO PIPELINE CONFIGURATION
@@ -73,7 +79,7 @@ stt:
   mic_device: smartcar_capture
   # Safety timeout in seconds for a single listen session; if exceeded,
   # orchestrator cancels listening and resumes vision.
-  timeout_seconds: 30.0
+  timeout_seconds: 90.0  # Increased for Raspberry Pi slow whisper transcription
   engines:
     faster_whisper:
       model: tiny.en
