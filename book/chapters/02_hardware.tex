@@ -1,0 +1,285 @@
+\chapter{Hardware Architecture}
+
+% ============================================================================
+% CHAPTER: HARDWARE ARCHITECTURE
+% Responsibility: Physical platform, compute hardware, power, sensors, actuators
+% Scope: WHAT hardware exists and HOW it is configured (not software behavior)
+% Consolidates: 01_physical, 02_hardware, 02_hardware_anatomy, 02_os_kernel
+% ============================================================================
+
+\section{Chapter Context}
+
+This chapter documents the physical hardware platform upon which the Smart Car system operates. Key components described herein have been verified present on the deployed system accessed via SSH at runtime. The hardware architecture directly constrains software design decisions documented in subsequent chapters.
+
+The fundamental hardware challenge in embedded robotics is achieving reliable low-latency performance within strict thermal, power, and computational budgets. This chapter establishes those constraints through measured system parameters rather than manufacturer specifications.
+
+\section{Dual-Brain Architecture}
+
+The system employs a dual-processor architecture separating high-level cognition from low-level reflexes. This separation is not merely organizational---it provides a hardware-enforced safety boundary that cannot be compromised by software failures.
+
+\subsection{The Cortex: Raspberry Pi 4 Model B}
+
+The primary compute platform is a Raspberry Pi 4 Model B (Revision 1.5) with 8 GB LPDDR4-3200 SDRAM. This specific unit has been configured for enhanced performance beyond stock parameters.
+
+\begin{table}[H]
+\centering
+\caption{Raspberry Pi 4 Specifications (Verified)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Measured Value} \\ \hline
+System-on-Chip & Broadcom BCM2711 \\ \hline
+CPU Architecture & ARM Cortex-A72 (ARMv8-A) \\ \hline
+CPU Cores & 4 \\ \hline
+Clock Frequency & 2.0 GHz (overclocked from 1.5 GHz) \\ \hline
+RAM & 8 GB (7.6 GB user-available) \\ \hline
+GPU Memory & Headless allocation configured \\ \hline
+Storage & microSD (Class 10 / UHS-I) \\ \hline
+\end{tabular}
+\end{table}
+
+The Raspberry Pi executes all artificial intelligence workloads: speech recognition, language model inference, computer vision, and decision-making. It runs Debian GNU/Linux (Trixie) with kernel version 6.12.47-1+rpt1-rpi-v8.
+
+\subsection{The Brainstem: ESP32 DevKit}
+
+An ESP32 microcontroller handles time-critical operations that cannot tolerate Linux scheduler latency. The ESP32 operates independently with its own control loop, providing:
+
+\begin{itemize}
+    \item Deterministic 50ms control cycle (20 Hz)
+    \item PWM signal generation for motor control
+    \item Analog-to-digital conversion for gas sensing
+    \item Ultrasonic sensor polling
+    \item Hardware collision interlock
+\end{itemize}
+
+\subsection{Inter-Processor Communication}
+
+The Raspberry Pi and ESP32 communicate via UART at 115200 baud using \texttt{/dev/serial0} (GPIO 14/15 on Pi, GPIO 16/17 on ESP32). The protocol uses simple ASCII commands and CSV-formatted telemetry.
+
+\begin{table}[H]
+\centering
+\caption{UART Communication Parameters}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Baud Rate & 115200 \\ \hline
+Data Bits & 8 \\ \hline
+Stop Bits & 1 \\ \hline
+Parity & None \\ \hline
+Pi Device & /dev/serial0 \\ \hline
+Pi TX/RX & GPIO 14/15 \\ \hline
+ESP32 RX/TX & GPIO 16/17 \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Overclocking Configuration}
+
+The stock Raspberry Pi 4 operates at 1.5 GHz. This deployment uses a 2.0 GHz overclock, providing a 33\% increase in raw processing throughput. The overclock is configured in \texttt{/boot/config.txt}:
+
+\begin{verbatim}
+arm_freq=2000
+over_voltage=6
+\end{verbatim}
+
+\textbf{Engineering Rationale}: The overclock is necessary to achieve acceptable latency for Faster-Whisper speech recognition and YOLO object detection on CPU. Without it, the voice-to-response latency would exceed user tolerance thresholds.
+
+\textbf{Thermal Consequence}: The overclock increases power dissipation and requires active cooling. A metal heatsink case with dual brushless fans is used to manage thermals under sustained AI workloads.
+
+\section{Power Distribution}
+
+Power stability is critical for reliable operation. The system uses two isolated power rails sharing a common ground reference.
+
+\subsection{Dual-Rail Architecture}
+
+\begin{itemize}
+    \item \textbf{Logic Rail (5V, 3A)}: Official Raspberry Pi USB-C power supply. Powers the Pi, camera, USB microphone, and TFT display.
+    \item \textbf{Drive Rail (12V, Li-Ion)}: Battery pack. Powers the L298N motor driver, ESP32, and DC motors.
+\end{itemize}
+
+\textbf{Common Ground}: Both rails share a ground reference to ensure UART logic levels (3.3V) between the Pi and ESP32 are correctly referenced. Without common ground, communication would be unreliable or impossible.
+
+\subsection{Power Budget Constraints}
+
+\begin{table}[H]
+\centering
+\caption{Power Consumption by Subsystem (Estimated)}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Component} & \textbf{Rail} & \textbf{Current} \\ \hline
+Raspberry Pi 4 (idle) & Logic & 600 mA \\ \hline
+Raspberry Pi 4 (AI load) & Logic & 1.5-2.0 A \\ \hline
+USB Camera & Logic & 200 mA \\ \hline
+USB Microphone & Logic & 50 mA \\ \hline
+TFT Display & Logic & 100 mA \\ \hline
+NeoPixel Ring (full white) & Logic & 400 mA \\ \hline
+ESP32 & Drive & 50-200 mA \\ \hline
+DC Motors (×4, stall) & Drive & 2-4 A \\ \hline
+\end{tabular}
+\end{table}
+
+\textbf{Critical Constraint}: Motor stall current can cause voltage sag on the drive rail. The logic rail must be isolated to prevent brownout-induced Pi crashes during motor stall events.
+
+\section{Sensor Subsystems}
+
+\subsection{Vision: Camera Module}
+
+A 5-megapixel camera module provides visual input for object detection. Configuration verified from \texttt{config/system.yaml}:
+
+\begin{itemize}
+    \item Camera Index: 0
+    \item Resolution: Downscaled to 640×640 for inference
+    \item Target FPS: 15 (rate-limited to manage thermal load)
+    \item Interface: CSI or USB (configuration-dependent)
+\end{itemize}
+
+\subsection{Audio: USB Sound Interface}
+
+Audio capture uses a USB sound card with an attached microphone. The ALSA device \texttt{smartcar\_capture} is configured in \texttt{system.yaml}; shared access (dsnoop) is optional and depends on host configuration.
+
+\begin{itemize}
+    \item Hardware Sample Rate: 48000 Hz
+    \item Resampled for STT: 16000 Hz
+    \item Preferred Device: ``USB Audio'' substring match
+\end{itemize}
+
+\subsection{Proximity: Ultrasonic Sensors}
+
+Three HC-SR04 ultrasonic sensors provide forward-arc obstacle detection. Each sensor is connected to dedicated GPIO pins on the ESP32.
+
+\begin{table}[H]
+\centering
+\caption{Ultrasonic Sensor Pinout (ESP32)}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Position} & \textbf{Trigger Pin} & \textbf{Echo Pin} \\ \hline
+Left (S1) & GPIO 4 & GPIO 5 \\ \hline
+Center (S2) & GPIO 18 & GPIO 19 \\ \hline
+Right (S3) & GPIO 21 & GPIO 22 \\ \hline
+\end{tabular}
+\end{table}
+
+The sensors are polled sequentially (not simultaneously) to prevent ultrasonic cross-talk interference.
+
+\subsection{Environmental: Gas Sensor}
+
+An MQ2 gas sensor connected to ESP32 ADC provides air quality monitoring.
+
+\begin{itemize}
+    \item Pin: GPIO 34 (ADC1\_CH6, input-only)
+    \item Output: Raw 12-bit integer (0-4095)
+    \item Sensitivity: Alcohol, volatile organic compounds
+\end{itemize}
+
+\section{Actuator Subsystems}
+
+\subsection{Locomotion: DC Motors and Driver}
+
+Four DC gear motors provide differential drive locomotion. The L298N H-bridge motor driver translates ESP32 GPIO signals to motor power.
+
+\begin{table}[H]
+\centering
+\caption{Motor Control Pinout (ESP32 → L298N)}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Function} & \textbf{ESP32 GPIO} & \textbf{L298N Input} \\ \hline
+Left Motor Forward & 25 & IN1 \\ \hline
+Left Motor Backward & 26 & IN2 \\ \hline
+Right Motor Forward & 27 & IN3 \\ \hline
+Right Motor Backward & 14 & IN4 \\ \hline
+\end{tabular}
+\end{table}
+
+Motor direction is controlled by GPIO logic levels. Speed control (PWM) is available but the current implementation uses full-on/full-off control.
+
+\subsection{Visual Feedback: NeoPixel LED Ring}
+
+An 8-LED NeoPixel ring provides visual state indication. The software defaults to board pin \texttt{D12} (GPIO12) using the \texttt{neopixel} library.
+
+\subsection{Display: TFT Screen}
+
+A 3.5-inch TFT display connected via SPI renders facial expressions and status graphics. Configuration:
+
+\begin{itemize}
+    \item Resolution: 480×320 pixels
+    \item Rotation: set in software (deployment uses 180 in \texttt{face\_fb})
+    \item SPI Bus/Device: 0/0
+    \item Framebuffer: /dev/fb0 (deployment) or /dev/fb1 (alternate framebuffer)
+\end{itemize}
+
+\section{Operating System Environment}
+
+\subsection{Linux Distribution}
+
+\begin{table}[H]
+\centering
+\caption{Operating System Details}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Distribution & Debian GNU/Linux \\ \hline
+Release & Trixie (Testing) \\ \hline
+Kernel & 6.12.47-1+rpt1-rpi-v8 \\ \hline
+Architecture & aarch64 (ARMv8-A) \\ \hline
+Init System & systemd \\ \hline
+\end{tabular}
+\end{table}
+
+The use of kernel 6.12 (rather than the typical 6.6 LTS in Bookworm) provides access to newer scheduler improvements (EEVDF) and hardware support.
+
+\subsection{Boot Timing}
+
+System startup time affects operational readiness. Critical-path analysis of the boot sequence:
+
+\begin{table}[H]
+\centering
+\caption{Boot Critical Chain (Observed in audit logs)}
+\begin{tabular}{|l|r|l|}
+\hline
+\textbf{Service} & \textbf{Time} & \textbf{Blocking} \\ \hline
+NetworkManager-wait-online & (observed) & Yes \\ \hline
+systemd-udev-settle & (observed) & Yes \\ \hline
+smart-car-orchestrator & (observed) & No \\ \hline
+\end{tabular}
+\end{table}
+
+\textbf{Observation}: Network wait can delay service readiness. Local subsystems could operate earlier but are currently coupled to orchestrator readiness.
+
+\section{Hardware Bill of Materials}
+
+\begin{table}[H]
+\centering
+\caption{Complete Hardware Bill of Materials}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Component} & \textbf{Model/Spec} & \textbf{Interface} \\ \hline
+Single-Board Computer & Raspberry Pi 4B 8GB & - \\ \hline
+Microcontroller & ESP32 DevKit & UART \\ \hline
+Motor Driver & L298N H-Bridge & GPIO \\ \hline
+DC Motors & Gear motors ×4 & L298N \\ \hline
+Ultrasonic Sensors & HC-SR04 ×3 & GPIO \\ \hline
+Gas Sensor & MQ2 & ADC \\ \hline
+Camera & 5MP CSI/USB & CSI/USB \\ \hline
+Microphone & USB Sound Card & USB \\ \hline
+Speaker & USB/3.5mm & USB/Audio \\ \hline
+Display & 3.5" TFT & SPI \\ \hline
+LED Ring & NeoPixel 8-LED & GPIO 12 \\ \hline
+Power Supply (Logic) & 5V 3A USB-C & USB-C \\ \hline
+Power Supply (Drive) & Li-Ion Battery & Barrel \\ \hline
+Cooling & Metal Case + Fans & - \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Chapter Summary}
+
+The Smart Car hardware architecture implements a dual-brain design with clear responsibility separation. The Raspberry Pi 4 handles AI workloads while the ESP32 manages time-critical motor control and safety interlocks. This separation provides hardware-enforced safety boundaries independent of software state.
+
+Key hardware parameters verified at runtime:
+\begin{itemize}
+    \item CPU: 2.0 GHz overclocked Cortex-A72
+    \item RAM: 8 GB (7.6 GB available)
+    \item UART: 115200 baud between Pi and ESP32
+    \item Sensors: 3× ultrasonic, 1× gas, 1× camera
+    \item Actuators: 4× DC motors via L298N
+    \item Feedback: 8-LED NeoPixel ring, 3.5" TFT display
+\end{itemize}
+
+The dual-rail power architecture isolates motor noise from logic circuits. Active cooling maintains thermal stability under continuous AI workloads. The next chapter examines how software architecture maps onto this hardware foundation.

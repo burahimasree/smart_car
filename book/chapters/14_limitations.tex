@@ -1,0 +1,273 @@
+\chapter{Limitations and Future Work}
+\label{ch:limitations}
+
+This chapter documents known system limitations, potential failure modes, and a roadmap for future enhancements. Honest assessment of constraints is essential for setting appropriate expectations and guiding development priorities.
+
+%----------------------------------------------------------------------
+\section{Current Limitations}
+\label{sec:limitations}
+
+\subsection{Computational Constraints}
+
+\begin{table}[htbp]
+\centering
+\caption{Performance limitations on Raspberry Pi 4 (not measured in this audit)}
+\label{tab:compute-limits}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Subsystem} & \textbf{Target} & \textbf{Achieved} \\
+\midrule
+Vision FPS & 15 & Not measured \\
+STT Latency & $<$1s & Not measured \\
+LLM Response & $<$2s & Not measured \\
+Boot Time & $<$30s & Not measured \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Raspberry Pi 4's quad-core Cortex-A72 cannot sustain concurrent AI workloads. Vision inference alone consumes 100\% of one core, leaving limited headroom for STT and LLM.
+
+\subsection{Audio Pipeline Limitations}
+
+\begin{description}
+    \item[No Acoustic Echo Cancellation (AEC)] The robot must mute its speaker to listen. ``Barge-in'' (interrupting TTS playback) is not supported---the robot cannot hear while speaking.
+    
+    \item[Single Microphone] Without a microphone array, no beamforming or noise source separation is possible. Performance degrades in noisy environments.
+    
+    \item[Fixed Sample Rate] The audio pipeline assumes 16~kHz input. Microphones with different native rates require resampling, adding latency.
+\end{description}
+
+\subsection{Network Dependencies}
+
+\begin{itemize}
+    \item \textbf{Cloud LLM Mode}: When configured to use cloud APIs, network outages degrade the system to local functionality only.
+    
+    \item \textbf{No Offline Voice}: Porcupine wakeword detection requires a valid access key. Offline operation requires pre-generated keyword models.
+\end{itemize}
+
+\subsection{Thermal Constraints}
+
+\begin{itemize}
+    \item \textbf{Throttling Threshold}: CPU throttles at 80°C
+    \item \textbf{Vision Impact}: Continuous inference drives temperature to $\sim$70°C
+    \item \textbf{Combined Load}: Running vision + STT simultaneously risks throttling
+    \item \textbf{Mitigation}: Active cooling required; vision pauses during audio capture
+\end{itemize}
+
+\subsection{Memory Pressure}
+
+\begin{table}[htbp]
+\centering
+\caption{Service memory footprint (not measured in this audit)}
+\label{tab:memory-limits}
+\begin{tabular}{lc}
+\toprule
+\textbf{Service} & \textbf{RSS} \\
+\midrule
+voice-pipeline (STT) & Not measured \\
+vision-runner & Not measured \\
+llm-service & Not measured \\
+orchestrator + others & Not measured \\
+\midrule
+\textbf{Total} & Not measured \\
+\textbf{Available (8GB)} & $\sim$7 GB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+While 8~GB provides comfortable headroom, the 4~GB Pi 4 variant would face swap pressure.
+
+\subsection{Sensor Limitations}
+
+\begin{description}
+    \item[Ultrasonic Blind Spots] HC-SR04 sensors have a limited cone of detection (spec-dependent). Objects outside this cone are undetected. Three sensors provide forward coverage, leaving side flanks blind.
+    
+    \item[Minimum Range] Ultrasonic sensors cannot reliably measure distances $<$2~cm. Very close obstacles may report erroneous maximum readings.
+    
+    \item[Camera Field of View] The camera's horizontal FOV limits peripheral vision (spec-dependent). Objects at the side are not detected until the robot turns.
+\end{description}
+
+%----------------------------------------------------------------------
+\section{Known Failure Modes}
+\label{sec:failure-modes}
+
+\subsection{Recoverable Failures}
+
+\begin{table}[htbp]
+\centering
+\caption{Recoverable failure scenarios}
+\label{tab:recoverable-failures}
+\begin{tabular}{lp{6cm}l}
+\toprule
+\textbf{Failure} & \textbf{Symptom} & \textbf{Recovery} \\
+\midrule
+Service crash & LED shows red blink & Systemd restart (3s) \\
+ZMQ timeout & Stale messages & Auto-reconnect \\
+Microphone lock & No wakeword detection & \texttt{fuser -k} in ExecStartPre \\
+Model file missing & Service fails to start & Systemd restart loop \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Non-Recoverable Failures}
+
+\begin{table}[htbp]
+\centering
+\caption{Non-recoverable failure scenarios}
+\label{tab:nonrecoverable-failures}
+\begin{tabular}{lp{6cm}l}
+\toprule
+\textbf{Failure} & \textbf{Symptom} & \textbf{Mitigation} \\
+\midrule
+Kernel panic & Complete freeze & Hardware watchdog (not enabled) \\
+SD card corruption & Boot failure & Regular backups \\
+Power brownout & Undefined state & Capacitor bank (not implemented) \\
+Thermal shutdown & Abrupt halt & Improved cooling \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Extending the System}
+\label{sec:extending}
+
+\subsection{Adding a New Skill}
+
+To add a ``Weather'' skill:
+
+\begin{enumerate}
+    \item \textbf{Create Service}: Write \texttt{src/skills/weather\_service.py} that queries a weather API
+    \item \textbf{Define Topic}: Add \texttt{TOPIC\_WEATHER} to \texttt{ipc.py}
+    \item \textbf{Subscribe}: Listen for \texttt{TOPIC\_LLM\_RESP} containing weather intents
+    \item \textbf{Update Prompt}: Modify LLM system prompt to include weather capability
+    \item \textbf{Register}: Create systemd unit file
+\end{enumerate}
+
+\begin{lstlisting}[language=Python, caption={Skill service template}]
+class WeatherSkill:
+    def __init__(self, config):
+        self.sub = make_subscriber(config, channel="downstream")
+        self.sub.setsockopt(zmq.SUBSCRIBE, TOPIC_LLM_RESP)
+        self.pub = make_publisher(config, channel="upstream")
+    
+    def run(self):
+        while True:
+            topic, data = self.sub.recv_multipart()
+            payload = json.loads(data)
+            if "weather" in payload.get("intent", ""):
+                result = self.fetch_weather(payload["location"])
+                publish_json(self.pub, TOPIC_TTS, {"text": result})
+\end{lstlisting}
+
+\subsection{Adding New Hardware}
+
+To integrate a 2D Lidar (RPLidar A1):
+
+\begin{enumerate}
+    \item \textbf{Driver}: Write Python wrapper using \texttt{rplidar} library
+    \item \textbf{Publisher}: Create \texttt{lidar\_runner.py} publishing to \texttt{TOPIC\_LIDAR}
+    \item \textbf{Message Format}: Define point cloud schema (angle, distance arrays)
+    \item \textbf{Fusion}: Update orchestrator to merge lidar with ultrasonic data
+    \item \textbf{Systemd Unit}: Add \texttt{lidar.service}
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Hardware Upgrade Path}
+\label{sec:hardware-upgrades}
+
+\subsection{Near-Term Upgrades}
+
+\begin{table}[htbp]
+\centering
+\caption{Recommended hardware upgrades}
+\label{tab:hardware-upgrades}
+\begin{tabular}{lp{4cm}p{4cm}}
+\toprule
+\textbf{Component} & \textbf{Current} & \textbf{Upgrade} \\
+\midrule
+AI Accelerator & CPU only & Google Coral USB (30+ FPS vision) \\
+Lidar & 3× Ultrasonic & RPLidar A1 (360° SLAM capable) \\
+Microphone & Single USB mic & ReSpeaker 4-Mic Array (beamforming) \\
+Compute & Pi 4 (8GB) & Pi 5 or Jetson Nano \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Google Coral Integration}
+
+Adding a Coral USB accelerator would transform vision performance:
+
+\begin{itemize}
+    \item Convert YOLO11n to TFLite with Edge TPU compilation
+    \item Expected inference: $\sim$30~ms (vs 280~ms on CPU)
+    \item Effective FPS: 30+ (vs 3.5)
+    \item Frees CPU for concurrent STT without thermal pressure
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Software Roadmap}
+\label{sec:software-roadmap}
+
+\subsection{Short-Term (3--6 Months)}
+
+\begin{enumerate}
+    \item \textbf{Hardware Watchdog}: Enable Broadcom watchdog via \texttt{/dev/watchdog}
+    \item \textbf{AEC Integration}: Implement software echo cancellation using speexdsp
+    \item \textbf{Health Dashboard}: Web-based status page via Flask/nginx
+    \item \textbf{OTA Updates}: Implement atomic update mechanism for field deployment
+\end{enumerate}
+
+\subsection{Medium-Term (6--12 Months)}
+
+\begin{enumerate}
+    \item \textbf{Local LLM Optimisation}: Quantised TinyLlama with speculative decoding
+    \item \textbf{SLAM Integration}: Occupancy grid mapping with lidar
+    \item \textbf{WebRTC Teleoperation}: Real-time video streaming to browser
+    \item \textbf{Multi-Robot Coordination}: ZeroMQ mesh for swarm behaviour
+\end{enumerate}
+
+\subsection{Long-Term Vision}
+
+\begin{enumerate}
+    \item \textbf{Full Offline Operation}: No cloud dependencies for any functionality
+    \item \textbf{Learning from Interaction}: On-device fine-tuning of behaviour
+    \item \textbf{Autonomous Navigation}: Path planning with obstacle memory
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Lessons Learned}
+\label{sec:lessons-learned}
+
+\subsection{What Worked}
+
+\begin{enumerate}
+    \item \textbf{ZeroMQ Decoupling}: Service isolation enabled independent iteration
+    \item \textbf{Multi-Venv Strategy}: Resolved irreconcilable numpy version conflicts
+    \item \textbf{Phase-Driven Design}: Single source of truth simplified debugging
+    \item \textbf{Hardware Interlock}: Firmware-level collision avoidance proved essential
+\end{enumerate}
+
+\subsection{What Could Improve}
+
+\begin{enumerate}
+    \item \textbf{Earlier Thermal Profiling}: Vision thermal impact discovered late
+    \item \textbf{Configuration Consolidation}: Settings scattered across YAML, env, code
+    \item \textbf{Structured Logging}: Plain text logs harder to analyse than JSON
+    \item \textbf{Metric Collection}: No Prometheus/Grafana for operational monitoring
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+This project demonstrates that ``industrial-grade'' reliability is achievable on ``hobbyist'' hardware through careful engineering:
+
+\begin{itemize}
+    \item \textbf{Constraints Drive Innovation}: The Pi 4's limitations forced efficient algorithms and service isolation
+    \item \textbf{Layered Safety}: ESP32 hardware interlock provides last-line defence regardless of software state
+    \item \textbf{Observable Systems}: LED feedback and structured phases enable debugging without instrumentation
+\end{itemize}
+
+The system, while limited by computational resources, provides a functional prototype for voice-controlled robotic navigation. The architecture---ZeroMQ buses, phase state machine, multi-venv isolation---scales to more capable hardware when available.
+
+Future work should prioritise hardware acceleration (Coral TPU) and acoustic echo cancellation to enable natural conversational interaction. The foundation is solid; the path forward is clear.

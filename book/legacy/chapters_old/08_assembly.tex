@@ -1,0 +1,40 @@
+\chapter{Assembly Guide}
+
+\section{Wiring Manifest}
+\subsection{Power (The Critical Path)}
+\begin{enumerate}
+    \item Connect **Li-Ion Battery +** to L298N 12V Input.
+    \item Connect **Li-Ion Battery -** to L298N GND.
+    \item Connect **L298N GND** to **ESP32 GND** AND **Raspberry Pi GND** (Common Ground).
+    \item Power the ESP32 via its 5V/VIN pin or USB (driven by Battery or separate Regulator).
+    \item Power the Pi 4 via Official USB-C Supply.
+\end{enumerate}
+
+\subsection{Data Links}
+\begin{itemize}
+    \item \textbf{UART}:
+    \begin{itemize}
+        \item Pi GPIO 14 (TX) $\rightarrow$ ESP32 GPIO 16 (RX).
+        \item Pi GPIO 15 (RX) $\rightarrow$ ESP32 GPIO 17 (TX).
+    \end{itemize}
+    \item \textbf{Sensors}: Connect Ultrasonic Trig/Echo pairs as defined in Firmware.
+\end{itemize}
+
+\section{Cooling Assembly}
+1. Apply thermal paste to Pi 4 CPU.
+2. Mount the **Metal Case**.
+3. Connect Dual Fans to Pi 5V and GND GPIO pins.
+\textbf{Test}: Run `stress -c 4` and verify temp stays $< 60^\circ$C.
+
+\section{Software Deployment}
+\begin{lstlisting}[language=bash]
+# 1. Clone
+git clone https://.../smart_car
+# 2. Setup Envs
+./scripts/setup_envs.sh
+# 3. Flash ESP32
+arduino-cli compile --fqbn esp32:esp32:esp32 src/uart/esp-code.ino
+arduino-cli upload -p /dev/ttyUSB0 ...
+# 4. Start
+sudo systemctl start orchestrator.service
+\end{lstlisting}

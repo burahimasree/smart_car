@@ -1,0 +1,37 @@
+\chapter{Physical Machine Reality}
+
+\section{The Host Hardware}
+The system operates on a **Raspberry Pi 4 Model B (Revision 1.5)**. Unlike standard consumer units, this specific device has been tuned for higher throughput.
+
+\subsection{Core Specifications}
+\begin{itemize}
+    \item \textbf{SoC}: Broadcom BCM2711 (Cortex-A72)
+    \item \textbf{Architecture}: \texttt{aarch64} (ARMv8-A)
+    \item \textbf{Memory}: 8 GB LPDDR4-3200 SDRAM (Effective: 7.6 GB User Available)
+    \item \textbf{Storage}: microSD (Class 10 / UHS-I)
+\end{itemize}
+
+\section{Measured Performance}
+\subsection{CPU Clock Domains}
+While the stock Pi 4 typically idles at 600 MHz and boosts to 1.5 GHz, **this unit is clocked at 2.00 GHz** (`2,000,478,464 Hz` measured).
+This indicates an active overclock configuration (`arm_freq=2000`) in `/boot/config.txt`.
+
+\textbf{Impact on Engineering}:
+\begin{itemize}
+    \item \textbf{Vision Latency}: The 33\% clock boost linearly improves YOLO inference times (approx 5-7 FPS boost).
+    \item \textbf{Thermal Envelope}: The dedicated 2.0 GHz clock requires active cooling (fan) to prevent thermal throttling ($>80^\circ$C).
+\end{itemize}
+
+\subsection{Memory Topology}
+The 8GB RAM is critical. A split usage pattern was observed:
+\begin{itemize}
+    \item \textbf{GPU Reserve}: Minimal allocation (likely 64MB or 128MB) for headless operation.
+    \item \textbf{User Space}: ~7.6 GB available.
+\end{itemize}
+This allows the `visn` (Vision) and `llme` (LLM) environments to coexist without memory swapping, which would catastrophically impact real-time deadlines.
+
+\section{Hardware Constraints}
+\begin{enumerate}
+    \item \textbf{USB Bandwidth}: The Pi 4 shared USB 3.0 bus bandwidth (4 Gbps) is the limiting factor for high-res camera + Coral TPU + USB Mic concurrency.
+    \item \textbf{Thermal Throttling}: If the CPU hits $80^\circ$C, the firmware aggressively downclocks to 600 MHz, causing "stuttering" in voice/vision responses.
+\end{enumerate}

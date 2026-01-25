@@ -1,0 +1,23 @@
+\chapter{Orchestration \& Failure Handling}
+
+\section{Service Boot Order}
+Our `systemd-analyze` data revealed a crucial race condition managed by systemd.
+\begin{verbatim}
+NetworkManager (8.15s) --------------------> [Online]
+                                                |
+Orchestrator (1.5s) --> [Waiting for IPC] --> [Connects]
+Vision (2.5s) --------> [Warming Up ONNX] --> [Ready]
+\end{verbatim}
+
+\section{The "Zombie" Risk}
+The Service Memory Audit revealed `voice-pipeline` holding **239 MB** of RAM.
+If this process crashes and fails to release the ZMQ socket (due to missing `LINGER`), the 240MB is freed by the OS, but the **TCP Port 6010** stays in `TIME_WAIT` state for 60 seconds.
+\textbf{Correction}: The Orchestrator uses `bind()` while Agents `connect()`. This means Agents can crash safely, but if the Orchestrator crashes, the Bus itself goes down for ~60s unless `SO_REUSEADDR` is used.
+
+\section{Watchdog Implementation}
+There is currently **no hardware watchdog** verified.
+\begin{itemize}
+    \item \textbf{Risk}: System freeze (Kernel Panic).
+    \item \textbf{Mitigation}: `systemd` handles user-space crashes (`Restart=always`), but cannot save a frozen kernel.
+    \item \textbf{Recommendation}: Enable the Broadcom Hardware Watchdog via `/dev/watchdog`.
+\end{itemize}

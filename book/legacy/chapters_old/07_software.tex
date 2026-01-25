@@ -1,0 +1,26 @@
+\chapter{Software Implementation}
+
+\section{Directory Structure}
+The codebase is organized by "Biological Function":
+\begin{itemize}
+    \item \texttt{src/core/}: The Nervous System (Orchestrator, IPC, Config).
+    \item \texttt{src/audio/}: The Ears & Mouth (STT, TTS).
+    \item \texttt{src/vision/}: The Eyes (YOLO, Camera).
+    \item \texttt{src/uart/}: The Spinal Cord (Serial Bridge).
+    \item \texttt{src/ui/}: The Face (Display).
+\end{itemize}
+
+\section{The Orchestrator Logic}
+The `Orchestrator` class is a **Finite State Machine (FSM)**.
+It subscribes to \textit{all} sensory inputs but only reacts based on its current state.
+\begin{itemize}
+    \item If \texttt{state == LISTENING}: Ignore Vision, prioritize Audio.
+    \item If \texttt{state == NAVIGATING}: Prioritize Vision/Sonar, ignore Audio (mostly).
+\end{itemize}
+
+\section{Extensibility}
+To add a new sensor (e.g., Lidar):
+1. Create `src/lidar/runner.py`.
+2. Connect to ZMQ.
+3. Publish to `topic.lidar`.
+4. The Orchestrator can now subscribe to it without changing the core IPC code.

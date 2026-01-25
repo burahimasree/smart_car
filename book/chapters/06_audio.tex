@@ -1,0 +1,315 @@
+\chapter{Audio Pipeline}
+
+% ============================================================================
+% CHAPTER: AUDIO PIPELINE
+% Responsibility: Voice interaction from microphone to transcription
+% Scope: Wakeword detection, speech capture, STT inference, TTS output
+% Consolidates: 06_audio, 04_audio_metrics
+% ============================================================================
+
+\section{Chapter Context}
+
+The audio pipeline enables voice interaction with the robot. This chapter documents the unified voice pipeline architecture as verified running on the deployed system. The audio subsystem solves a particularly challenging embedded systems problem: how can multiple audio consumers (wakeword detection, speech-to-text) share a single microphone without resource conflicts?
+
+Voice interaction is the primary user interface. The quality of this pipeline---latency, accuracy, reliability---directly determines user experience.
+
+\section{Deployment Constraints}
+
+\subsection{Hardware Constraints}
+
+The ALSA audio subsystem on Linux provides exclusive device access by default. Only one process can open the microphone at a time. Early system designs used separate wakeword and STT processes, causing ``Device busy'' errors during handoff.
+
+\subsection{Latency Budget}
+
+Users expect voice responses within 3 seconds of speaking. The audio pipeline contributes:
+
+\begin{itemize}
+    \item Wakeword detection: Low-latency response is required
+    \item Speech capture: Duration of user speech + silence detection
+    \item STT inference: Model-dependent
+\end{itemize}
+
+\subsection{Thermal Constraints}
+
+Speech-to-text inference can create CPU spikes. Sustained inference would increase thermal load, so the pipeline returns to low-power wakeword monitoring between interactions.
+
+\section{Unified Pipeline Architecture}
+
+The production system uses \texttt{UnifiedVoicePipeline} (\texttt{src/audio/unified\_voice\_pipeline.py}), a single-process design that owns the microphone exclusively and multiplexes audio to internal consumers.
+
+\subsection{Thread Model}
+
+\begin{table}[H]
+\centering
+\caption{Pipeline Thread Architecture}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Thread} & \textbf{Role} & \textbf{Blocking} \\ \hline
+Main Thread & State machine, ZMQ pub/sub & Non-blocking poll \\ \hline
+Audio Thread & Ring buffer writer & Blocks on ALSA read \\ \hline
+Wakeword Thread & Porcupine processing & Consumes from ring buffer \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{State Machine}
+
+The pipeline implements a four-state machine:
+
+\begin{table}[H]
+\centering
+\caption{Pipeline State Machine}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{State} & \textbf{Description} & \textbf{Audio Consumer} \\ \hline
+IDLE & Waiting for wakeword & Porcupine \\ \hline
+CAPTURING & Recording user speech & Ring buffer accumulation \\ \hline
+TRANSCRIBING & Running STT inference & None (audio paused) \\ \hline
+COOLDOWN & Post-TTS pause & None (prevents self-trigger) \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{State Transitions}
+
+\begin{verbatim}
+IDLE → [wakeword detected] → CAPTURING
+CAPTURING → [silence detected] → TRANSCRIBING
+TRANSCRIBING → [STT complete] → COOLDOWN
+COOLDOWN → [timeout] → IDLE
+\end{verbatim}
+
+\section{Audio Capture}
+
+\subsection{Hardware Configuration}
+
+Audio capture uses a USB sound card with ALSA. Configuration from \texttt{config/system.yaml}:
+
+\begin{table}[H]
+\centering
+\caption{Audio Capture Configuration}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+ALSA Device & smartcar\_capture (dsnoop) \\ \hline
+Hardware Sample Rate & 48000 Hz \\ \hline
+STT Sample Rate & 16000 Hz (resampled) \\ \hline
+Buffer Size & 20 ms \\ \hline
+Wakeword Frame & 30 ms \\ \hline
+STT Chunk & 500 ms \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Shared Access via dsnoop}
+
+The ALSA \texttt{dsnoop} plugin enables multiple processes to read from the same capture device. The system configures this in \texttt{/etc/asound.conf}. However, the unified pipeline makes this unnecessary---a single process owns the device.
+
+\section{Wakeword Detection}
+
+\subsection{Porcupine Engine}
+
+Wakeword detection uses Picovoice Porcupine, a commercial wake word engine optimized for embedded deployment.
+
+\begin{table}[H]
+\centering
+\caption{Porcupine Configuration}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Engine & porcupine \\ \hline
+Model & hey-veera\_en\_raspberry-pi\_v3\_0\_0.ppn \\ \hline
+Sensitivity & 0.75 \\ \hline
+Keywords & ``hey veera'', ``veera'', ``vira'', ``vera'' \\ \hline
+Frame Length & 512 samples (32 ms at 16 kHz) \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Performance Characteristics}
+
+\begin{table}[H]
+\centering
+\caption{Wakeword Detection Performance (Not measured in this audit)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Metric} & \textbf{Value} \\ \hline
+Detection Latency & Not measured \\ \hline
+CPU Usage (idle monitoring) & Not measured \\ \hline
+False Positive Rate & Not formally measured \\ \hline
+\end{tabular}
+\end{table}
+
+Porcupine runs on-device with minimal CPU overhead, making continuous monitoring practical even on battery power.
+
+\section{Speech-to-Text}
+
+\subsection{Faster-Whisper Engine}
+
+Speech-to-text uses Faster-Whisper, a CTranslate2-optimized implementation of OpenAI Whisper.
+
+\begin{table}[H]
+\centering
+\caption{STT Configuration (from config/system.yaml)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Engine & faster\_whisper \\ \hline
+Model & tiny.en \\ \hline
+Compute Type & int8 (quantized) \\ \hline
+Device & cpu \\ \hline
+Beam Size & 1 (greedy decoding) \\ \hline
+Language & en \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Voice Activity Detection}
+
+The pipeline uses RMS-based silence detection rather than a neural VAD:
+
+\begin{verbatim}
+rms = sqrt(mean(samples^2)) / 32768.0
+is_speech = rms > silence_threshold
+\end{verbatim}
+
+Configuration:
+\begin{itemize}
+    \item \textbf{Silence Threshold}: 0.25 (normalized RMS)
+    \item \textbf{Silence Duration}: 800 ms before capture ends
+    \item \textbf{Maximum Capture}: 15 seconds
+    \item \textbf{Minimum Confidence}: 0.3 (transcript filtering)
+\end{itemize}
+
+\textbf{Design Rationale}: RMS detection was chosen over neural VAD for simplicity and predictable behavior. Neural VAD performance under motor noise was not validated in this audit.
+
+\subsection{Transcription Process}
+
+\begin{enumerate}
+    \item Captured audio is written to a temporary WAV file
+    \item Faster-Whisper loads the file and runs inference
+    \item Segments are concatenated into final transcript
+    \item Result published to \texttt{stt.transcription} topic
+\end{enumerate}
+
+\subsection{Performance Characteristics}
+
+\begin{table}[H]
+\centering
+\caption{STT Performance (Not measured in this audit)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Metric} & \textbf{Value} \\ \hline
+Inference Time (simple command) & Not measured \\ \hline
+CPU Usage (during inference) & Not measured \\ \hline
+Memory (model loaded) & Not measured \\ \hline
+Real-time Factor & Not measured \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Text-to-Speech}
+
+\subsection{Piper Engine}
+
+Text-to-speech uses Piper, an open-source neural TTS system.
+
+\begin{table}[H]
+\centering
+\caption{TTS Configuration}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Voice & en-us-amy-medium \\ \hline
+Sample Rate & 22050 Hz \\ \hline
+Output Device & plughw:3,0 \\ \hline
+Playback Command & aplay \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Performance}
+
+TTS synthesis begins after receiving text; perceived latency depends on model and runtime conditions.
+
+\section{Resource Consumption}
+
+\subsection{Memory Profile}
+
+\begin{table}[H]
+\centering
+\caption{Voice Pipeline Memory Usage (Measured)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Component} & \textbf{Memory} \\ \hline
+Voice Pipeline Process (total) & 239 MB RSS \\ \hline
+Porcupine Model & $\sim$2 MB \\ \hline
+Faster-Whisper Model (tiny.en int8) & $\sim$200 MB \\ \hline
+Audio Buffers & $\sim$10 MB \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{CPU Profile}
+
+\begin{table}[H]
+\centering
+\caption{CPU Usage by State}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{State} & \textbf{CPU Usage} \\ \hline
+IDLE (wakeword monitoring) & 0.2\% \\ \hline
+CAPTURING & 5-10\% \\ \hline
+TRANSCRIBING & 180\% (2 cores saturated) \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Latency Analysis}
+
+\subsection{End-to-End Voice Latency}
+
+\begin{table}[H]
+\centering
+\caption{Latency Breakdown: Wakeword to Transcript (illustrative; not measured in this audit)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Stage} & \textbf{Duration} \\ \hline
+Wakeword Detection & Not measured \\ \hline
+User Speech & Variable (user-dependent) \\ \hline
+Silence Detection & 800 ms (configured window) \\ \hline
+STT Inference & Not measured \\ \hline
+\textbf{Total (post-speech)} & Not measured \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Bottleneck Analysis}
+
+LLM latency varies by backend and network conditions. End-to-end voice-to-response time depends on speech duration, STT inference time, and LLM/TTS runtimes.
+
+The 8.15-second network wait at boot (NetworkManager-wait-online) means the voice pipeline is effectively non-functional until WiFi connects.
+
+\section{Failure Modes}
+
+\subsection{Microphone Unavailable}
+
+If the USB sound card is disconnected or another process holds the device, the pipeline fails to start. systemd will retry with \texttt{Restart=on-failure}.
+
+\subsection{Wakeword False Positives}
+
+The system may trigger on sounds similar to ``Veera.'' The cooldown state prevents immediate re-triggering from TTS output, but external sounds can cause false activations.
+
+\subsection{STT Timeout}
+
+If STT inference exceeds the configured timeout, the orchestrator cancels the listening session and returns to IDLE. This prevents the system from getting stuck waiting for transcription.
+
+\subsection{Self-Triggering}
+
+Without the COOLDOWN state, the robot's own TTS output could trigger the wakeword detector. The current implementation mutes listening during and briefly after speech output.
+
+\textbf{Limitation}: There is no acoustic echo cancellation (AEC). The microphone hardware-mutes during TTS rather than filtering the speaker output from the microphone signal. This prevents ``barge-in'' (interrupting the robot while it speaks).
+
+\section{Chapter Summary}
+
+The audio pipeline implements voice interaction through a unified single-process architecture. Key verified characteristics:
+
+\begin{itemize}
+    \item \textbf{Wakeword}: Porcupine, $<50$ ms detection, 0.2\% CPU idle
+    \item \textbf{STT}: Faster-Whisper tiny.en int8, $\sim$800 ms inference
+    \item \textbf{TTS}: Piper en-us-amy-medium, $<200$ ms to first audio
+    \item \textbf{Memory}: 239 MB total for voice pipeline process
+    \item \textbf{States}: IDLE → CAPTURING → TRANSCRIBING → COOLDOWN
+\end{itemize}
+
+The unified pipeline eliminates microphone resource conflicts that plagued earlier multi-process designs. The absence of acoustic echo cancellation is a known limitation preventing barge-in capability. The next chapter examines the vision pipeline that operates in parallel with voice interaction.

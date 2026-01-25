@@ -1,0 +1,72 @@
+\appendix
+
+\chapter{Configuration Reference}
+
+\section{system.yaml Schema}
+\begin{verbatim}
+ipc:
+  upstream: "tcp://127.0.0.1:6010"
+  downstream: "tcp://127.0.0.1:6011"
+
+audio:
+  sample_rate: 16000
+  hw_sample_rate: 48000
+  preferred_device_substring: "USB"
+
+wakeword:
+  sensitivity: 0.6
+  model_path: "models/veera.ppn"
+
+stt:
+  silence_threshold: 0.35
+  silence_duration_ms: 900
+  engines:
+    faster_whisper:
+      model: "tiny.en"
+      compute_type: "int8"
+
+llm:
+  engine: "gemini"
+  gemini_model: "gemini-1.5-flash"
+  temperature: 0.2
+
+vision:
+  camera_index: 0
+  target_fps: 15.0
+  model_path_onnx: "models/vision/yolo11n.onnx"
+
+nav:
+  uart_device: "/dev/ttyS0"
+  baud_rate: 115200
+\end{verbatim}
+
+\chapter{Pin Reference Tables}
+
+\section{ESP32 GPIO Map}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Function} & \textbf{GPIO} & \textbf{Notes} \\ \hline
+UART RX (from Pi) & 16 & PiSerial \\ \hline
+UART TX (to Pi) & 17 & PiSerial \\ \hline
+Motor IN1 & 25 & Left Forward \\ \hline
+Motor IN2 & 26 & Left Backward \\ \hline
+Motor IN3 & 27 & Right Forward \\ \hline
+Motor IN4 & 14 & Right Backward \\ \hline
+Ultrasonic Trig1 & 4 & Left \\ \hline
+Ultrasonic Echo1 & 5 & Left \\ \hline
+MQ3 ADC & 34 & Gas Sensor \\ \hline
+Servo PWM & 23 & Optional \\ \hline
+\end{tabular}
+
+\section{Raspberry Pi GPIO Map}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Function} & \textbf{GPIO} & \textbf{Notes} \\ \hline
+UART TX & 14 & To ESP32 RX \\ \hline
+UART RX & 15 & From ESP32 TX \\ \hline
+Neopixel PWM & 12 & DMA via rpi\_ws281x \\ \hline
+SPI MOSI & 10 & Display \\ \hline
+SPI SCLK & 11 & Display \\ \hline
+SPI CE0 & 8 & Display CS \\ \hline
+Display DC & 25 & Data/Command \\ \hline
+\end{tabular}

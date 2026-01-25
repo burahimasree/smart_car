@@ -1,0 +1,39 @@
+\chapter{OS, Kernel, and Boot Pipeline}
+
+\section{Operating Environment}
+\begin{itemize}
+    \item \textbf{Distributor}: Debian GNU/Linux
+    \item \textbf{Release}: Trixie (Testing/Unstable branch)
+    \item \textbf{Kernel}: `6.12.47-1+rpt1-rpi-v8`
+\end{itemize}
+
+The use of \textbf{Kernel 6.12} puts this system on the bleeding edge of the Pi ecosystem (typically Bookworm uses 6.6 LTS). This is likely required for specific hardware support or performance schedulers (EEVDF).
+
+\section{Boot Pipeline Analysis}
+Start-up time is a critical metric for a "turn-key" appliance. We measured the `systemd` critical chain ($T_0 = \text{Kernel Init}$).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|r|l|}
+\hline
+\textbf{Service} & \textbf{Time} & \textbf{Blocking?} \\ \hline
+\texttt{NetworkManager-wait-online} & 8.150s & Yes (Blocks Cloud) \\ \hline
+\texttt{systemd-udev-settle} & ~2.1s & Yes (Hardware Init) \\ \hline
+\texttt{smart-car-orchestrator} & ~1.5s & No (Async Start) \\ \hline
+\end{tabular}
+\caption{Boot Critical Chain}
+\end{table}
+
+\subsection{Optimization Analysis}
+The 8.15s wait for Network shows that the robot is **Cloud-Dependent**. It refuses to reach a "Ready" state until the Wi-Fi handshake completes.
+\begin{quote}
+    \textbf{Engineering Note}: This is a bottleneck. Local subsystems (Motor/Lights) should be decoupled from NetworkManager to allow "instant on" manual control.
+\end{quote}
+
+\section{Process Hierarchy}
+The system uses `systemd` user units (or system units) to manage lifecycle.
+\begin{enumerate}
+    \item \texttt{init} (1) spawns \texttt{systemd}.
+    \item \texttt{systemd} spawns \texttt{python3} (Orchestrator).
+    \item \texttt{Orchestrator} manages ZMQ but \textbf{does not} spawn children directly; it relies on sibling services (`voice`, `vision`) to attach to the bus.
+\end{enumerate}

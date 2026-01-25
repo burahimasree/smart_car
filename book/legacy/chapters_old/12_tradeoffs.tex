@@ -1,0 +1,20 @@
+\chapter{Design Decisions \& Trade-offs}
+
+\section{Python vs C++}
+\begin{itemize}
+    \item \textbf{Decision}: Python was chosen for the entire stack.
+    \item \textbf{Trade-off}: Higher CPU usage for FSM logic vs. rapid iteration speed and vast AI ecosystem (PyTorch/HuggingFace).
+    \item \textbf{Mitigation}: Heavy lifting (Inference, Signal Processing) is offloaded to C-extensions via numpy and ONNX runtime.
+\end{itemize}
+
+\section{Cloud vs Local LLM}
+\begin{itemize}
+    \item \textbf{Decision}: Cloud Gemini as primary.
+    \item \textbf{Trade-off}: Network latency (~1s) vs Intelligence. Local 1B models are too stupid for complex reasoning; Local 7B models are too slow/heavy for Pi 4.
+\end{itemize}
+
+\section{ZMQ vs ROS 2}
+\begin{itemize}
+    \item \textbf{Decision}: ZeroMQ + Custom JSON.
+    \item \textbf{Trade-off}: Manual message definition vs. ROS ecosystem overhead. ROS 2 is too heavy for a lean embedded appliance.
+\end{itemize}

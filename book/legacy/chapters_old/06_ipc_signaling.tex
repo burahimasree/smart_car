@@ -1,0 +1,22 @@
+\chapter{IPC \& Hardware Signaling}
+
+\section{ZeroMQ Latency Profile}
+The backbone of the system is the ZMQ TCP bus.
+\begin{itemize}
+    \item \textbf{Transport}: Local TCPLoopback (`127.0.0.1`)
+    \item \textbf{Latency}: $< 200 \mu s$ message overhead.
+    \item \textbf{Stability}: Proven robust against service restarts, provided `LINGER` is set correctly (see Audit findings).
+\end{itemize}
+
+\section{UART to ESP32}
+The serial link `/dev/ttyS0` operates at \textbf{115200 baud}.
+\begin{quote}
+    Calculation: $115200 \text{ bps} / 10 \approx 11.5 \text{ KB/s}$.
+\end{quote}
+A standard JSON movement command (`{"x": 100, "y": 0}`) is ~20 bytes.
+Transmission time: $20 / 11500 \approx 1.7ms$.
+This proves that the Serial Link is \textbf{not} a bottleneck for motor control (unlike the Network is for AI).
+
+\section{GPIO Signal Integrity}
+While not heavily used by the OS directly (offloaded to ESP32), the Pi 4's GPIO is susceptible to jitter if the CPU is heavily loaded by Vision.
+\textbf{Engineering Decision}: This is why we offload PWM to the ESP32. If the Pi freezes during an LLM Garbage Collection pause, the ESP32 keeps the motors spinning (or stops them via watchdog), implementing a "Hardware Safety Layer".

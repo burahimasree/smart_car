@@ -1,0 +1,370 @@
+\chapter{Human Interface}
+\label{ch:human-interface}
+
+This chapter documents the visual feedback systems that communicate robot state to human observers. The design follows the principle that system status must be instantly discernible without consulting logs or diagnostic tools.
+
+%----------------------------------------------------------------------
+\section{Design Philosophy}
+\label{sec:hmi-philosophy}
+
+Two complementary output modalities provide status feedback:
+
+\begin{enumerate}
+    \item \textbf{LED Ring}: Peripheral vision indicator---visible from any angle
+    \item \textbf{TFT Display}: Detailed status for close interaction
+\end{enumerate}
+
+Both systems derive their state primarily from \texttt{TOPIC\_DISPLAY\_STATE} messages published by the orchestrator. The LED service also listens to health events for error override.
+
+%----------------------------------------------------------------------
+\section{LED Ring Service}
+\label{sec:led-service}
+
+\subsection{Hardware Configuration}
+
+The LED ring uses an 8-pixel NeoPixel (WS2812B) connected to board pin \texttt{D12} (GPIO12):
+
+\begin{lstlisting}[language=Python, caption={LED hardware initialisation}]
+class LedRingHardware:
+    def __init__(self, pixel_pin_attr: str, pixel_count: int,
+                 brightness: float, dry_run: bool) -> None:
+        if dry_run:
+            return
+        pixel_pin = getattr(board, pixel_pin_attr)
+        order = getattr(neopixel, "GRB", neopixel.GRB)
+        self._pixels = neopixel.NeoPixel(
+            pixel_pin,
+            pixel_count,
+            brightness=brightness,
+            auto_write=False,
+            pixel_order=order,
+        )
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{LED ring hardware parameters}
+\label{tab:led-hardware}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Pixel Count & 8 \\
+GPIO Pin & D12 (GPIO12) \\
+Protocol & WS2812B \\
+Colour Order & GRB \\
+Default Brightness & 0.25 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{State-to-Pattern Mapping}
+
+Each orchestrator phase maps to a distinct visual pattern:
+
+\begin{table}[htbp]
+\centering
+\caption{LED state patterns and meanings}
+\label{tab:led-patterns}
+\begin{tabular}{llp{5cm}}
+\toprule
+\textbf{State} & \textbf{Pattern} & \textbf{User Interpretation} \\
+\midrule
+\texttt{idle} & Dim cyan breathing & ``I am awake and waiting'' \\
+\texttt{wakeword\_detected} & Bright green flash & ``I heard my name'' \\
+\texttt{listening} & Blue rotating sweep & ``I am recording your voice'' \\
+\texttt{transcribing} & Purple pulse & ``Converting speech to text'' \\
+\texttt{thinking} & Pink pulse & ``Generating response'' \\
+\texttt{tts\_processing} & Orange pulse & ``Creating speech audio'' \\
+\texttt{speaking} & Dark green chase & ``Playing audio response'' \\
+\texttt{error} & Red blink & ``Something is wrong'' \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Animation Implementation}
+
+\begin{lstlisting}[language=Python, caption={LED animator state management}]
+class LedAnimator:
+    """LED = f(Phase). Each phase has a distinct pattern."""
+    
+    def __init__(self, hardware: LedRingHardware) -> None:
+        self.hw = hardware
+        self.current_state = "idle"
+        self._last_render = 0.0
+        self._state_entered = 0.0
+    
+    def set_state(self, state: str) -> None:
+        """Set LED state. Only changes on actual state change."""
+        if state != self.current_state:
+            self.current_state = state
+            self._last_render = 0.0  # Force immediate refresh
+            self._state_entered = time.time()
+\end{lstlisting}
+
+\subsection{Pattern Generation}
+
+Example breathing pattern for idle state:
+
+\begin{lstlisting}[language=Python, caption={Breathing animation mathematics}]
+def _render_breathing(self, base_color: RGB, period: float = 2.0) -> list[RGB]:
+    elapsed = time.time() - self._state_entered
+    # Sinusoidal brightness modulation
+    brightness = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(2 * math.pi * elapsed / period))
+    return [(int(c * brightness) for c in base_color)] * self.hw.pixel_count
+\end{lstlisting}
+
+\subsection{Dry-Run Mode}
+
+For development without hardware:
+
+\begin{lstlisting}[language=Python, caption={Graceful hardware absence handling}]
+if board is None or neopixel is None:
+    self.logger.error("Board/NeoPixel modules unavailable; forcing dry-run mode")
+    self._dry_run = True
+    return
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{TFT Display Service}
+\label{sec:display-service}
+
+\subsection{Framebuffer Rendering}
+
+The display uses direct framebuffer access, avoiding X11 overhead. The \texttt{display\_runner} implementation uses pygame:
+
+\begin{lstlisting}[language=Python, caption={Framebuffer configuration}]
+# Set SDL to use framebuffer before importing pygame
+os.environ.setdefault("SDL_VIDEODRIVER", "fbcon")
+os.environ.setdefault("SDL_FBDEV", "/dev/fb1")
+\end{lstlisting}
+
+This ``headless graphics'' approach avoids the overhead of a desktop environment.
+
+\subsection{Display Parameters}
+
+\begin{table}[htbp]
+\centering
+\caption{TFT display configuration}
+\label{tab:display-config}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Model & Waveshare 3.5" TFT \\
+Resolution & 480 $\times$ 320 pixels \\
+Interface & SPI \\
+Framebuffer Device & \texttt{/dev/fb0} (deployment) \\
+Driver & \texttt{fbcon} (pygame) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{State Visualisation}
+
+\begin{lstlisting}[language=Python, caption={Display state enumeration}]
+class DisplayState(Enum):
+    IDLE = auto()
+    LISTENING = auto()
+    THINKING = auto()
+    SPEAKING = auto()
+    NAVIGATING = auto()
+
+@dataclass
+class DisplayStatus:
+    state: DisplayState = DisplayState.IDLE
+    text: str = "Ready"
+    direction: Optional[str] = None
+    vision_label: Optional[str] = None
+    vision_paused: bool = False
+    last_update: float = 0.0
+\end{lstlisting}
+
+\subsection{Colour Scheme}
+
+\begin{lstlisting}[language=Python, caption={Display colour definitions}]
+COLORS = {
+    "bg_idle": (20, 30, 60),
+    "bg_listening": (20, 80, 40),
+    "bg_thinking": (80, 70, 20),
+    "bg_speaking": (100, 50, 20),
+    "bg_navigating": (30, 30, 80),
+    "text_primary": (255, 255, 255),
+    "text_secondary": (180, 180, 180),
+    "accent": (0, 200, 255),
+    "face_outline": (240, 240, 255),
+    "face_fill": (10, 15, 30),
+    "eye_fill": (240, 240, 255),
+    "eye_pupil": (10, 10, 20),
+    "mouth": (240, 160, 120),
+    "blush": (255, 192, 203),
+}
+\end{lstlisting}
+
+\subsection{Expressive Face Rendering}
+
+The \texttt{display\_runner} implementation renders a stylised face whose expression reflects system state:
+
+\begin{table}[htbp]
+\centering
+\caption{Face expression mapping}
+\label{tab:face-expressions}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{State} & \textbf{Expression} \\
+\midrule
+IDLE & Neutral expression, eyes at rest \\
+LISTENING & Eyes widen, pupils dilate (simulating attention) \\
+THINKING & One eyebrow raises, mouth flattens (concentration) \\
+SPEAKING & Mouth animates in sync with TTS amplitude \\
+NAVIGATING & Eyes track movement direction \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Display Renderer Class}
+
+\begin{lstlisting}[language=Python, caption={Display renderer initialisation}]
+class DisplayRenderer:
+    """Renders status to the TFT display using pygame."""
+    
+    def __init__(self, width: int = 480, height: int = 320,
+                 fb_device: str = "/dev/fb1"):
+        self.width = width
+        self.height = height
+        self.fb_device = fb_device
+        self.screen: Optional[pygame.Surface] = None
+        self.font_large: Optional[pygame.font.Font] = None
+        self.font_medium: Optional[pygame.font.Font] = None
+        self.font_small: Optional[pygame.font.Font] = None
+        self.animation_frame = 0
+        self._initialized = False
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Event Subscription}
+\label{sec:hmi-events}
+
+Both services subscribe to orchestrator state updates:
+
+\begin{lstlisting}[language=Python, caption={Display service topic subscriptions}]
+from src.core.ipc import (
+    TOPIC_CMD_LISTEN_START,
+    TOPIC_CMD_LISTEN_STOP,
+    TOPIC_CMD_PAUSE_VISION,
+    TOPIC_LLM_REQ,
+    TOPIC_LLM_RESP,
+    TOPIC_NAV,
+    TOPIC_STT,
+    TOPIC_TTS,
+    TOPIC_VISN,
+    TOPIC_WW_DETECTED,
+    make_subscriber,
+)
+\end{lstlisting}
+
+The \texttt{display\_runner} implementation can optionally show:
+\begin{itemize}
+    \item Current navigation direction (arrows)
+    \item Vision detection labels (when not paused)
+    \item Most recent transcript text
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Systemd Service Units}
+\label{sec:hmi-systemd}
+
+\subsection{LED Ring Service}
+
+\begin{lstlisting}[language=bash, caption={led-ring.service}]
+[Unit]
+Description=Smart Car LED Ring Status Indicator
+After=network.target
+
+[Service]
+Type=simple
+User=root  # Required for GPIO access
+WorkingDirectory=/home/dev/smart_car
+ExecStart=/home/dev/smart_car/.venvs/visn-py313/bin/python \
+          -m src.piled.led_ring_service --config config/system.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+\end{lstlisting}
+
+Note: The LED service runs as root for GPIO access via \texttt{/dev/gpiomem}.
+
+\subsection{Display Service}
+
+\begin{lstlisting}[language=bash, caption={display.service}]
+[Unit]
+Description=Smart Car TFT Display Service
+After=network.target
+
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/home/dev/smart_car
+ExecStart=/home/dev/smart_car/.venvs/visn-py313/bin/python \
+          -m src.ui.face_fb --state=BASE --rotate=180 --swap-rb --eye-scale=0.75 --mouth-scale=0.75 --blush-scale=0.4 --fbdev=/dev/fb0
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Resource Consumption}
+\label{sec:hmi-resources}
+
+\begin{table}[htbp]
+\centering
+\caption{Human interface service resource usage (not measured in this audit)}
+\label{tab:hmi-resources}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Service} & \textbf{Memory (RSS)} & \textbf{CPU} \\
+\midrule
+LED Ring & Not measured & Not measured \\
+Display & Not measured & Not measured \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The modest resource footprint allows both services to run continuously without impacting core functionality.
+
+%----------------------------------------------------------------------
+\section{Debugging with Visual Feedback}
+\label{sec:visual-debugging}
+
+The LED state protocol enables rapid debugging:
+
+\begin{enumerate}
+    \item \textbf{Cyan breathing}: System healthy, awaiting input
+    \item \textbf{Green flash}: Wakeword detected---if missing, check microphone
+    \item \textbf{Blue sweep}: Audio capture---if stuck, check voice pipeline
+    \item \textbf{Purple/Pink pulse}: Processing---if long, check STT/LLM services
+    \item \textbf{Green chase}: Speaking---if silent, check TTS or audio output
+    \item \textbf{Red blink}: Error state---check logs for specifics
+\end{enumerate}
+
+This visual language allows users to diagnose issues without connecting a terminal.
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:hmi-summary}
+
+The human interface layer provides:
+
+\begin{enumerate}
+    \item \textbf{Immediate Feedback}: LED patterns visible from any angle
+    \item \textbf{Detailed Status}: TFT display shows text and navigation state
+    \item \textbf{Phase Consistency}: Both outputs derive from single source (orchestrator)
+    \item \textbf{Low Overhead}: Framebuffer rendering avoids desktop environment
+    \item \textbf{Graceful Degradation}: Dry-run modes handle missing hardware
+\end{enumerate}
+
+The design principle---``if a human cannot tell what the system is doing by looking at the LEDs alone, the design is wrong''---aims to make internal state visible without requiring technical instrumentation.

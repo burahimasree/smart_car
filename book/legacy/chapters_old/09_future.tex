@@ -1,0 +1,16 @@
+\chapter{Future Scope}
+
+\section{Hardware Upgrades}
+\begin{itemize}
+    \item \textbf{Accelerator}: Adding a Google Coral USB Stick would jump Vision FPS from 3.5 to 30+.
+    \item \textbf{Lidar}: Replacing Sonar with a cheap 2D Lidar (RPLidar A1) for SLAM mapping.
+\end{itemize}
+
+\section{Software Roadmap}
+\begin{itemize}
+    \item \textbf{Local LLM}: Migrating from Cloud Gemini to a localized TinyLlama quantized model (requires Pi 5 or Jetson).
+    \item \textbf{Web Dashboard}: A React-based telemetry screen hosted on Nginx.
+\end{itemize}
+
+\section{Conclusion}
+This project proves that with careful engineering, "Industrial Grade" reliability is achievable on "Hobbyist" hardware. The constraints of the Raspberry Pi 4 forced us to write better, more efficient code—a lesson that applies to all embedded engineering.

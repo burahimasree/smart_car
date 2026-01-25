@@ -1,0 +1,24 @@
+\chapter{Perception: Sight \& Sound}
+
+\section{Auditory System}
+Most "DIY" robots use cheap analog microphones that pick up motor noise.
+We utilize a **USB Soundcard** with a high-quality lapel mic or dedicated array.
+
+\subsection{The Pipeline}
+\begin{enumerate}
+    \item \textbf{Capture}: `PySoundIO` or `SoundDevice` reads Raw PCM (16kHz, Mono).
+    \item \textbf{VAD (Reflex)}: WebRTC VAD chops the stream into "Speech" and "Silence".
+    \item \textbf{Wake Word (Reflex)}: Porcupine (compressed recurrent net) scans for "Veera".
+    \item \textbf{STT (Cortex)}: Faster-Whisper (Int8) transcribes the buffer ~800ms after speech ends.
+\end{enumerate}
+
+\section{Visual System}
+We utilize a **5MP Camera** module (likely OV5647 or similar CSI connection).
+\begin{itemize}
+    \item \textbf{Resolution}: Downscaled to 640x640 for AI inference.
+    \item \textbf{Model}: YOLOv11 (Nano), exported to ONNX format.
+    \item \textbf{Throughput}: ~3.5 FPS (CPU only).
+\end{itemize}
+
+\subsection{Threaded Capture}
+A naive `cv2.read()` blocks the main thread. We use a `LatestFrameGrabber` daemon thread that constantly empties the camera buffer, ensuring that the AI always sees the *current* reality, not a frame from 2 seconds ago.

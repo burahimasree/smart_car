@@ -1,0 +1,427 @@
+\chapter{ESP32 Firmware}
+\label{ch:firmware}
+
+This chapter documents the ESP32 microcontroller firmware that implements time-critical sensor polling, motor control, and hardware-level collision avoidance. Operating independently of the Linux host, the firmware provides bounded response times critical for physical safety.
+
+%----------------------------------------------------------------------
+\section{Design Philosophy}
+\label{sec:firmware-philosophy}
+
+The firmware architecture follows the ``brainstem'' analogy---handling reflexive responses that must occur faster than Linux process scheduling permits. While the Raspberry Pi runs the cognitive stack (voice, vision, LLM), the ESP32 maintains a strict 50~ms control loop (20~Hz) for sensor fusion and motor safety.
+
+Key design principles:
+
+\begin{enumerate}
+    \item \textbf{Deterministic Timing}: Fixed-interval loop targets consistent sensor sampling
+    \item \textbf{Hardware Interlock}: Collision avoidance cannot be overridden by software commands
+    \item \textbf{Transparency}: All state changes are reported to the host via UART
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Hardware Interface}
+\label{sec:firmware-hardware}
+
+\subsection{Pin Assignments}
+
+\begin{table}[htbp]
+\centering
+\caption{ESP32 GPIO pin assignments}
+\label{tab:esp32-pins}
+\begin{tabular}{llll}
+\toprule
+\textbf{Function} & \textbf{Pin} & \textbf{Type} & \textbf{Notes} \\
+\midrule
+\multicolumn{4}{l}{\textit{Ultrasonic Sensor 1 (Front-Left)}} \\
+TRIG1 & GPIO 4 & Output & Trigger pulse \\
+ECHO1 & GPIO 5 & Input & Echo return \\
+\midrule
+\multicolumn{4}{l}{\textit{Ultrasonic Sensor 2 (Front-Centre)}} \\
+TRIG2 & GPIO 18 & Output & Trigger pulse \\
+ECHO2 & GPIO 19 & Input & Echo return \\
+\midrule
+\multicolumn{4}{l}{\textit{Ultrasonic Sensor 3 (Front-Right)}} \\
+TRIG3 & GPIO 21 & Output & Trigger pulse \\
+ECHO3 & GPIO 22 & Input & Echo return \\
+\midrule
+\multicolumn{4}{l}{\textit{Motor Driver}} \\
+IN1 & GPIO 25 & Output & Left motor forward \\
+IN2 & GPIO 26 & Output & Left motor backward \\
+IN3 & GPIO 27 & Output & Right motor forward \\
+IN4 & GPIO 14 & Output & Right motor backward \\
+\midrule
+\multicolumn{4}{l}{\textit{Additional Peripherals}} \\
+MQ2 & GPIO 34 & ADC & Gas sensor (ADC1\_CH6) \\
+SERVO & GPIO 23 & PWM & Pan servo (0--180°) \\
+RXD2 & GPIO 16 & UART RX & Pi communication \\
+TXD2 & GPIO 17 & UART TX & Pi communication \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{UART Configuration}
+
+Communication with the Raspberry Pi uses UART2:
+
+\begin{lstlisting}[language=C++, caption={UART initialisation}]
+HardwareSerial PiSerial(2);  // UART Port 2
+PiSerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
+\end{lstlisting}
+
+Parameters: 115200 baud, 8 data bits, no parity, 1 stop bit.
+
+%----------------------------------------------------------------------
+\section{Main Control Loop}
+\label{sec:firmware-loop}
+
+The firmware executes a strict five-phase loop every iteration:
+
+\begin{figure}[htbp]
+\centering
+\begin{verbatim}
+┌─────────────────────────────────────────────────────────┐
+│                    MAIN LOOP (20 Hz)                    │
+├─────────────────────────────────────────────────────────┤
+│  Phase 1: READ SENSORS                                  │
+│     • Trigger S1, S2, S3 sequentially (avoid crosstalk) │
+│     • Sample MQ2 analogue (0–4095)                      │
+│     • Cache distances in lastSensorDistances[]          │
+├─────────────────────────────────────────────────────────┤
+│  Phase 2: COLLISION CHECK (Highest Priority)            │
+│     • Find minimum distance across all sensors          │
+│     • <10cm → Emergency stop, motorsEnabled = false     │
+│     • 10–20cm → Warning zone, forward blocked           │
+│     • >20cm → Clear, full mobility restored             │
+├─────────────────────────────────────────────────────────┤
+│  Phase 3: TELEMETRY TRANSMISSION                        │
+│     • Format CSV packet with all sensor values          │
+│     • Transmit via UART to Raspberry Pi                 │
+├─────────────────────────────────────────────────────────┤
+│  Phase 4: COMMAND INGESTION                             │
+│     • Check USB Serial (debugging)                      │
+│     • Check PiSerial (operational commands)             │
+│     • Parse and execute valid commands                  │
+├─────────────────────────────────────────────────────────┤
+│  Phase 5: DEBUG OUTPUT                                  │
+│     • Print sensor values to USB Serial Monitor         │
+└─────────────────────────────────────────────────────────┘
+\end{verbatim}
+\caption{ESP32 main loop execution phases.}
+\label{fig:firmware-loop}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Collision Avoidance System}
+\label{sec:collision-avoidance}
+
+The collision avoidance system implements a three-zone safety model with hardware priority over software commands.
+
+\subsection{Safety Zones}
+
+\begin{table}[htbp]
+\centering
+\caption{Collision avoidance zone definitions}
+\label{tab:collision-zones}
+\begin{tabular}{lcll}
+\toprule
+\textbf{Zone} & \textbf{Distance} & \textbf{Action} & \textbf{State Flags} \\
+\midrule
+Emergency & $<$ 10~cm & Immediate motor stop & \texttt{obstacleDetected=true} \\
+          &          & Motors disabled       & \texttt{motorsEnabled=false} \\
+\midrule
+Warning   & 10--20~cm & Forward commands blocked & \texttt{inWarningZone=true} \\
+          &           & Rotation/reverse allowed & \texttt{motorsEnabled=true} \\
+\midrule
+Clear     & $>$ 20~cm & Full mobility & All flags false \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Collision Check Implementation}
+
+\begin{lstlisting}[language=C++, caption={Collision detection logic}]
+void checkCollision() {
+    long minDist = 9999;
+    int closestSensor = -1;
+    
+    // Find minimum valid distance
+    for (int i = 0; i < 3; i++) {
+        long d = lastSensorDistances[i];
+        if (d > 0 && d < minDist) {  // Ignore timeouts (-1)
+            minDist = d;
+            closestSensor = i + 1;
+        }
+    }
+    
+    bool wasObstacle = obstacleDetected;
+    bool wasWarning = inWarningZone;
+    
+    // === EMERGENCY STOP ZONE (<10cm) ===
+    if (minDist <= STOP_DISTANCE_CM) {
+        if (!obstacleDetected) {
+            emergencyStop();
+            sendCollisionAlert("EMERGENCY_STOP");
+        }
+        obstacleDetected = true;
+        motorsEnabled = false;
+        inWarningZone = true;
+    }
+    // === WARNING ZONE (10-20cm) ===
+    else if (minDist <= WARNING_DISTANCE_CM) {
+        obstacleDetected = false;
+        inWarningZone = true;
+        motorsEnabled = true;
+        if (!wasWarning) {
+            sendCollisionAlert("WARNING_ZONE");
+        }
+    }
+    // === CLEAR ZONE (>20cm) ===
+    else {
+        obstacleDetected = false;
+        inWarningZone = false;
+        motorsEnabled = true;
+        if (wasObstacle || wasWarning) {
+            sendCollisionAlert("CLEAR");
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Hardware Interlock Guarantee}
+
+The collision avoidance system operates at the firmware level, enforcing safety logic at the lowest layer:
+
+\begin{itemize}
+    \item The \texttt{motorsEnabled} flag is checked in all motor command handlers
+    \item Forward commands are rejected when \texttt{inWarningZone} or \texttt{obstacleDetected}
+    \item The Pi's AI cannot override the hardware interlock---it can only request movements
+    \item Even if the Pi commands ``FORWARD'' while an obstacle exists, the firmware refuses
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Telemetry Protocol}
+\label{sec:telemetry-protocol}
+
+\subsection{Packet Format}
+
+Telemetry is transmitted as comma-separated values:
+
+\begin{lstlisting}[language=bash, caption={Telemetry packet format}]
+DATA:S1:43,S2:120,S3:99,MQ2:1240,SERVO:90,LMOTOR:0,RMOTOR:0,OBSTACLE:0,WARNING:0
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{Telemetry field definitions}
+\label{tab:telemetry-fields}
+\begin{tabular}{lll}
+\toprule
+\textbf{Field} & \textbf{Unit} & \textbf{Description} \\
+\midrule
+S1, S2, S3 & cm & Ultrasonic distances (-1 = timeout) \\
+MQ2 & ADC units & Gas sensor reading (0--4095) \\
+SERVO & degrees & Current servo angle (0--180) \\
+LMOTOR, RMOTOR & -255 to 255 & Motor speed/direction \\
+OBSTACLE & boolean & Emergency stop active \\
+WARNING & boolean & Warning zone active \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Transmission Rate}
+
+Telemetry is transmitted every loop iteration at 20~Hz. The UART bridge parses these packets and republishes to the upstream bus.
+
+%----------------------------------------------------------------------
+\section{Command Protocol}
+\label{sec:command-protocol}
+
+\subsection{Supported Commands}
+
+\begin{table}[htbp]
+\centering
+\caption{ESP32 command set}
+\label{tab:esp32-commands}
+\begin{tabular}{lll}
+\toprule
+\textbf{Command} & \textbf{Parameters} & \textbf{Description} \\
+\midrule
+FORWARD & speed (0--255) & Move forward \\
+BACKWARD & speed (0--255) & Move backward \\
+LEFT & speed (0--255) & Rotate left \\
+RIGHT & speed (0--255) & Rotate right \\
+STOP & --- & Halt all motors \\
+SERVO & angle (0--180) & Set servo position \\
+SCAN & --- & 360° environmental scan \\
+STATUS & --- & Request current state \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Command Validation}
+
+\begin{lstlisting}[language=C++, caption={Forward command with interlock check}]
+void handleCommand(String command, String source) {
+    command.trim();
+    command.toUpperCase();
+    
+    if (command.startsWith("FORWARD")) {
+        // === INTERLOCK CHECK ===
+        if (obstacleDetected || inWarningZone) {
+            sendAck("FORWARD", "BLOCKED:COLLISION");
+            return;  // Refuse to execute
+        }
+        int speed = parseIntParam(command, 200);
+        moveForward(speed);
+        sendAck("FORWARD", "OK");
+    }
+    // ... other commands
+}
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Special Manoeuvres}
+\label{sec:special-manoeuvres}
+
+\subsection{360-Degree Scan}
+
+The \texttt{SCAN} command triggers a full environmental survey:
+
+\begin{lstlisting}[language=C++, caption={360° scan procedure}]
+void performScan() {
+    for (int pos = 0; pos < 8; pos++) {
+        // Read sensors at current heading
+        readSensors();
+        sendData();
+        
+        // Rotate 45 degrees
+        turnRight(255);
+        delay(SCAN_ROTATE_TIME_MS);  // 200ms
+        
+        // Settle before next reading
+        stopMotors();
+        delay(SCAN_PAUSE_MS);  // 100ms
+    }
+}
+\end{lstlisting}
+
+This produces eight distance readings at 0°, 45°, 90°, 135°, 180°, 225°, 270°, and 315° relative to the starting orientation. The Pi can reconstruct a polar distance map for navigation planning.
+
+\subsection{Emergency Stop}
+
+\begin{lstlisting}[language=C++, caption={Emergency stop implementation}]
+void emergencyStop() {
+    // Immediately stop all motors
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    leftMotorSpeed = 0;
+    rightMotorSpeed = 0;
+    Serial.println("!!! EMERGENCY STOP !!!");
+}
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Ultrasonic Sensor Management}
+\label{sec:ultrasonic}
+
+\subsection{Sequential Triggering}
+
+Ultrasonic sensors are triggered sequentially to prevent acoustic crosstalk:
+
+\begin{lstlisting}[language=C++, caption={Distance measurement}]
+long readDistance(int trigPin, int echoPin) {
+    // Ensure clean trigger
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    
+    // 10us trigger pulse
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+    
+    // Measure echo with timeout
+    long duration = pulseIn(echoPin, HIGH, 30000);  // 30ms timeout
+    
+    if (duration == 0) return -1;  // Timeout
+    
+    // Convert to centimeters (speed of sound = 343 m/s)
+    return duration * 0.0343 / 2;
+}
+\end{lstlisting}
+
+\subsection{Timeout Handling}
+
+A 30~ms timeout prevents the loop from blocking on absent or defective sensors. Timeout readings are reported as -1 and excluded from collision calculations.
+
+%----------------------------------------------------------------------
+\section{Motor Control}
+\label{sec:motor-control}
+
+\subsection{Differential Drive}
+
+The robot uses differential drive with four digital outputs:
+
+\begin{lstlisting}[language=C++, caption={Motor control primitives}]
+void moveForward(int speed) {
+    if (!motorsEnabled) return;
+    digitalWrite(IN1, HIGH);  // Left forward
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);  // Right forward
+    digitalWrite(IN4, LOW);
+    leftMotorSpeed = speed;
+    rightMotorSpeed = speed;
+}
+
+void turnLeft(int speed) {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);  // Left backward
+    digitalWrite(IN3, HIGH);  // Right forward
+    digitalWrite(IN4, LOW);
+    leftMotorSpeed = -speed;
+    rightMotorSpeed = speed;
+}
+\end{lstlisting}
+
+Note: Forward commands check \texttt{motorsEnabled}; rotation commands do not, allowing the robot to turn away from obstacles.
+
+%----------------------------------------------------------------------
+\section{Timing Characteristics}
+\label{sec:firmware-timing}
+
+\begin{table}[htbp]
+\centering
+\caption{Firmware timing budget}
+\label{tab:firmware-timing}
+\begin{tabular}{lc}
+\toprule
+\textbf{Operation} & \textbf{Duration} \\
+\midrule
+Loop period (target) & 50~ms (20~Hz) \\
+Ultrasonic read (×3) & $\sim$30~ms max \\
+Collision check & $<$1~ms \\
+Telemetry format \& send & $\sim$5~ms \\
+Command parsing & $<$1~ms \\
+\midrule
+Total per loop & $\sim$37~ms typical \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The conservative 50~ms loop period provides margin for UART latency and sensor variability.
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:firmware-summary}
+
+The ESP32 firmware implements the robot's safety-critical reflexes:
+
+\begin{enumerate}
+    \item \textbf{Deterministic Loop}: 20~Hz sensor polling ensures responsive collision detection
+    \item \textbf{Three-Zone Safety}: Emergency ($<$10~cm), Warning (10--20~cm), Clear ($>$20~cm)
+    \item \textbf{Hardware Interlock}: Firmware refuses dangerous commands regardless of Pi instructions
+    \item \textbf{Transparent Telemetry}: All state continuously reported for host-side logging
+    \item \textbf{Fail-Safe Design}: Forward motion is blocked when obstacles are detected
+\end{enumerate}
+
+The firmware serves as the robot's last line of defence against physical collisions, operating independently of the Linux scheduler and AI stack.

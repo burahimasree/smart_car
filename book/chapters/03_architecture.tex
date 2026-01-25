@@ -1,0 +1,264 @@
+\chapter{Software Architecture}
+
+% ============================================================================
+% CHAPTER: SOFTWARE ARCHITECTURE
+% Responsibility: High-level software design, service topology, data flow
+% Scope: HOW software is organized (not implementation details of each service)
+% Consolidates: 01_architecture, 03_architecture, 03_nervous_system
+% ============================================================================
+
+\section{Chapter Context}
+
+This chapter presents the software architecture of the Smart Car system as verified through runtime observation. The architecture addresses a fundamental challenge in embedded robotics: enabling concurrent multi-modal operation (audio, vision, motor control) on resource-constrained hardware without resource contention or cascading failures.
+
+The solution employs a Service-Oriented Architecture (SOA) where independent processes communicate through a message bus, supervised by a central orchestrator implementing a finite state machine.
+
+\section{Architectural Principles}
+
+Three core principles guided the software architecture design:
+
+\subsection{Process Isolation}
+
+Each functional capability runs as an independent operating system process. A crash in the vision service does not terminate the voice pipeline. Memory exhaustion in one service does not corrupt another. This isolation is enforced by the Linux kernel, not by application code.
+
+\subsection{Message-Driven Communication}
+
+Services communicate exclusively through a publish-subscribe message bus. No service directly calls methods on another service. No service holds references to another service. This decoupling enables:
+
+\begin{itemize}
+    \item Independent service restart without system-wide impact
+    \item Service replacement without interface changes
+    \item Asynchronous operation by design
+\end{itemize}
+
+\subsection{Explicit State Management}
+
+The system's operational state is managed by a single orchestrator process implementing a finite state machine. State transitions are explicit, logged, and constrained. Illegal state combinations are structurally impossible rather than merely discouraged.
+
+\section{Service Topology}
+
+Eight services compose the runtime system. Each service is managed by systemd, ensuring automatic startup, crash recovery, and orderly shutdown.
+
+\begin{table}[H]
+\centering
+\caption{Service Inventory (Configured)}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Service} & \textbf{Module} & \textbf{Role} \\ \hline
+orchestrator & src.core.orchestrator & Central state machine, event routing \\ \hline
+voice-pipeline & src.audio.voice\_service & Wakeword detection, speech-to-text \\ \hline
+llm & src.llm.local\_llm\_runner & Local LLM integration \\ \hline
+tts & src.tts.piper\_runner & Text-to-speech synthesis \\ \hline
+vision & src.vision.vision\_runner & Object detection (YOLO) \\ \hline
+uart & src.uart.bridge & ESP32 communication \\ \hline
+display & src.ui.face\_fb & TFT screen rendering \\ \hline
+led-ring & src.piled.led\_ring\_service & NeoPixel status indication \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Message Bus Architecture}
+
+Inter-process communication uses ZeroMQ (ZMQ) with a publish-subscribe pattern over TCP sockets. This choice over alternatives (ROS, D-Bus, Unix sockets) was deliberate:
+
+\begin{itemize}
+    \item \textbf{ZMQ vs ROS}: ZMQ is lightweight; ROS introduces substantial runtime overhead
+    \item \textbf{ZMQ vs D-Bus}: ZMQ supports pub/sub payloads; D-Bus is optimized for method calls
+    \item \textbf{ZMQ vs Unix Sockets}: ZMQ provides built-in pub/sub semantics; Unix sockets require custom multiplexing
+\end{itemize}
+
+\subsection{Dual-Bus Topology}
+
+Two ZMQ buses separate event flow by direction:
+
+\begin{table}[H]
+\centering
+\caption{IPC Bus Configuration}
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Bus} & \textbf{Address} & \textbf{Direction} & \textbf{Purpose} \\ \hline
+Upstream & tcp://127.0.0.1:6010 & Service → Orchestrator & Events, sensor data \\ \hline
+Downstream & tcp://127.0.0.1:6011 & Orchestrator → Services & Commands, state updates \\ \hline
+\end{tabular}
+\end{table}
+
+The orchestrator binds to both buses. All other services connect. This asymmetry means services can crash and reconnect without affecting bus availability.
+
+\subsection{Message Format}
+
+Messages consist of a topic (byte string) and payload (JSON-encoded dictionary). Example:
+
+\begin{verbatim}
+Topic: b"stt.transcription"
+Payload: {"text": "move forward", "confidence": 0.92}
+\end{verbatim}
+
+\section{Data Flow Architecture}
+
+The system follows an OODA (Observe-Orient-Decide-Act) loop distributed across processes:
+
+\begin{figure}[H]
+\centering
+\begin{verbatim}
+    OBSERVE                ORIENT              DECIDE              ACT
+    -------                ------              ------              ---
+    
+    [Camera] ----+
+                 |
+    [Mic]   ----+---> [Orchestrator] ---> [LLM Service] ---> [Motors]
+                 |          |                                    |
+    [Sensors]---+           |                                [TTS]
+                            |                                    |
+                            v                                [Display]
+                    [State Machine]                              |
+                            |                                [LEDs]
+                            v
+                    [Phase Broadcast]
+\end{verbatim}
+\caption{OODA Data Flow Architecture}
+\end{figure}
+
+\subsection{Perception Path}
+
+Sensor data flows from hardware to orchestrator:
+
+\begin{enumerate}
+    \item \textbf{Voice Pipeline}: Microphone → Porcupine (wakeword) → Faster-Whisper (STT) → \texttt{stt.transcription}
+    \item \textbf{Vision Pipeline}: Camera → YOLO inference → \texttt{visn.object}
+    \item \textbf{ESP32 Telemetry}: Ultrasonic sensors → UART → \texttt{esp32.raw}
+\end{enumerate}
+
+\subsection{Cognition Path}
+
+User intent is processed through the LLM:
+
+\begin{enumerate}
+    \item Orchestrator receives \texttt{stt.transcription}
+    \item Orchestrator constructs prompt with context (vision state, conversation history)
+    \item Orchestrator publishes \texttt{llm.request}
+    \item LLM service calls the configured backend (local or cloud)
+    \item LLM service publishes \texttt{llm.response} with structured JSON
+\end{enumerate}
+
+\subsection{Action Path}
+
+Commands flow from orchestrator to actuators:
+
+\begin{enumerate}
+    \item Orchestrator parses LLM response JSON
+    \item Speech output: publishes \texttt{tts.speak}
+    \item Motor commands: publishes \texttt{nav.command}
+    \item State indication: publishes \texttt{display.state}
+\end{enumerate}
+
+\section{State Machine Design}
+
+The orchestrator implements a five-phase finite state machine that governs system behavior.
+
+\subsection{Phase Definitions}
+
+\begin{table}[H]
+\centering
+\caption{Orchestrator Phases}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Phase} & \textbf{Description} \\ \hline
+IDLE & Waiting for wakeword; vision active \\ \hline
+LISTENING & Capturing user speech; vision paused \\ \hline
+THINKING & Waiting for LLM response; all input paused \\ \hline
+SPEAKING & Playing TTS audio; microphone muted \\ \hline
+ERROR & System error; awaiting recovery \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Transition Constraints}
+
+The state machine enforces 15 legal transitions. Any event not matching a valid (current\_phase, trigger) pair is silently ignored. This design makes illegal states structurally impossible rather than merely unlikely.
+
+Example valid transitions:
+\begin{itemize}
+    \item (IDLE, wakeword) → LISTENING
+    \item (LISTENING, stt\_valid) → THINKING
+    \item (THINKING, llm\_with\_speech) → SPEAKING
+    \item (SPEAKING, tts\_done) → IDLE
+\end{itemize}
+
+\subsection{Timeout Enforcement}
+
+Each non-IDLE phase has a configurable timeout. If the expected completion event does not arrive within the timeout, the orchestrator forces a transition to IDLE (or ERROR for repeated failures). This prevents the system from becoming stuck in intermediate states.
+
+\begin{table}[H]
+\centering
+\caption{Phase Timeouts (configurable)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Phase} & \textbf{Timeout} \\ \hline
+LISTENING & Configured in \texttt{system.yaml} \\ \hline
+THINKING & Network-dependent (no hard timeout) \\ \hline
+SPEAKING & Duration of TTS audio + buffer \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Virtual Environment Isolation}
+
+Python dependency conflicts are resolved through separate virtual environments per service category. This allows services to use incompatible library versions without conflict.
+
+\begin{table}[H]
+\centering
+\caption{Virtual Environment Assignments}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Environment} & \textbf{Path} & \textbf{Services} \\ \hline
+stte & .venvs/stte & orchestrator, voice-pipeline, uart \\ \hline
+llme & .venvs/llme & llm \\ \hline
+ttse & .venvs/ttse & tts \\ \hline
+visn & .venvs/visn & vision \\ \hline
+visn-py313 & .venvs/visn-py313 & display, led-ring \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Failure Isolation Boundaries}
+
+The architecture creates natural failure domains:
+
+\subsection{Process-Level Isolation}
+
+Each service runs in a separate process. A segmentation fault, infinite loop, or memory exhaustion in one service does not propagate to others. systemd's \texttt{Restart=on-failure} directive automatically restarts crashed services.
+
+\subsection{Bus-Level Isolation}
+
+ZMQ sockets automatically reconnect after peer failure. A service crash causes a brief message gap, not a bus-wide failure. The orchestrator continues operating and will observe the restarted service when it reconnects.
+
+\subsection{Hardware-Level Isolation}
+
+The ESP32 operates independently of Raspberry Pi software state. Even if the Pi kernel panics, the ESP32 continues polling ultrasonic sensors and will halt motors if obstacles are detected.
+
+\section{Configuration Architecture}
+
+System behavior is configured through YAML files, enabling deployment customization without code modification.
+
+\begin{table}[H]
+\centering
+\caption{Configuration Files}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{File} & \textbf{Contents} \\ \hline
+config/system.yaml & IPC addresses, model paths, service parameters \\ \hline
+.env & API keys, credentials (not in repository) \\ \hline
+\end{tabular}
+\end{table}
+
+Configuration values support environment variable substitution (e.g., \texttt{\$\{ENV:GEMINI\_API\_KEY\}}) allowing secrets to be injected at runtime.
+
+\section{Chapter Summary}
+
+The Smart Car software architecture employs Service-Oriented Architecture with ZeroMQ message passing and a central finite state machine orchestrator. Key architectural properties:
+
+\begin{itemize}
+    \item \textbf{8 independent services} running as separate Linux processes
+    \item \textbf{Dual ZMQ buses} (ports 6010/6011) separating upstream events from downstream commands
+    \item \textbf{5-phase state machine} with 17 legal transitions
+    \item \textbf{Multiple virtual environments} isolating Python dependencies
+    \item \textbf{Hardware-level safety} via independent ESP32 collision avoidance
+\end{itemize}
+
+This architecture enables concurrent multi-modal operation with failure isolation at process, bus, and hardware levels. The following chapters examine each service in detail, beginning with the inter-process communication layer that binds them together.

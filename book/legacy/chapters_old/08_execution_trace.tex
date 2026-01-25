@@ -1,0 +1,20 @@
+\chapter{End-to-End Execution Trace}
+
+\section{Interaction: "Move Forward"}
+
+\begin{enumerate}
+    \item \textbf{T+0.000s}: Audio detected (Mic Hardware interrupt).
+    \item \textbf{T+0.030s}: Frame accumulated in Ring Buffer (30ms chunk).
+    \item \textbf{T+0.050s}: Porcupine Keyword Match (On-Device CPU).
+    \item \textbf{T+0.950s}: User finishes speaking 1.2s command + Silence Buffer.
+    \item \textbf{T+1.750s}: Faster-Whisper Decoding complete (Pi 4 CPU Spike to 180\%).
+    \item \textbf{T+1.760s}: JSON `stt.result` on ZMQ Bus.
+    \item \textbf{T+2.800s}: Round-trip to Google Cloud Gemini (Network Lag ~1s).
+    \item \textbf{T+2.810s}: Orchestrator parses `{"direction": "forward"}`.
+    \item \textbf{T+2.812s}: UART Write to ESP32.
+    \item \textbf{T+2.820s}: Wheels turn.
+\end{enumerate}
+
+\textbf{Total Latency}: ~2.8 seconds.
+\textbf{Dominant Factor}: Cloud Network RTT (35\%) and Silence Buffer (30\%).
+\textbf{Conclusion}: Local implementation of LLM (if optimized to <1s) typically beats Cloud latency, but on a Pi 4, a 7B model takes 10s+, so Cloud is currently faster.

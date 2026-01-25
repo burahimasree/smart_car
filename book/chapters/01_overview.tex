@@ -1,0 +1,179 @@
+\chapter{System Overview}
+
+% ============================================================================
+% CHAPTER: SYSTEM OVERVIEW
+% Responsibility: Problem domain, system vision, high-level capabilities
+% Scope: WHAT the system does, NOT HOW it is implemented
+% ============================================================================
+
+\section{Introduction and Motivation}
+
+The pursuit of autonomous robotics has traditionally been constrained by a fundamental dichotomy: systems are either sophisticated but expensive, or affordable but limited. Industrial robots from established manufacturers offer reliable autonomy but require capital investments exceeding tens of thousands of dollars. Conversely, educational robotics kits provide accessibility but deliver only rudimentary capabilities---line following, obstacle avoidance via simple reflexes, or remote control operation.
+
+This project addresses a specific gap in this landscape: the development of an \textbf{autonomous, voice-controlled robotic platform} using commodity hardware. The target platform is the Raspberry Pi 4 Model B paired with an ESP32 microcontroller.
+
+The motivation extends beyond mere cost reduction. Modern artificial intelligence has reached a maturation point where large language models can interpret natural language commands and computer vision models can identify objects with low latency---both capabilities that were computationally infeasible on embedded hardware merely five years ago. The confluence of affordable single-board computers, quantized AI models, and cloud API accessibility creates an unprecedented opportunity for sophisticated autonomous systems at educational price points.
+
+However, hardware capability alone does not guarantee system reliability. The critical challenge lies in \textit{architectural design}: how independent subsystems---audio capture, speech recognition, language understanding, visual perception, motor control, and user feedback---can operate concurrently without resource contention, cascading failures, or unpredictable behavior. This document presents a complete solution to that challenge.
+
+\section{Problem Statement}
+
+Embedded robotics implementations commonly suffer from architectural deficiencies that manifest as operational failures under real-world conditions. Analysis of typical hobbyist and educational robotics projects reveals three categories of systemic problems.
+
+\subsection{Blocking Operation Failures}
+
+Traditional single-threaded robot control follows a sequential pattern: read sensors, compute decision, actuate motors, repeat. This approach fails catastrophically when any operation requires significant time. Audio capture for voice commands blocks the control loop, causing the robot to drive blindly during speech recognition. Camera frame processing introduces latency, resulting in motor commands based on stale visual data. Network requests to cloud APIs freeze the entire system for seconds at a time.
+
+The consequence is a robot that cannot safely perform concurrent activities. It cannot listen while moving. It cannot observe while speaking. It cannot think while sensing. Each capability excludes the others.
+
+\subsection{Cascading Failure Propagation}
+
+Monolithic architectures create tight coupling between unrelated subsystems. A malformed response from a cloud API crashes the JSON parser, which terminates the main process, which halts motor control, which leaves the robot stranded mid-motion. A corrupted camera frame triggers an exception in the vision module, which propagates upward until the entire application terminates. Memory exhaustion in the speech recognition engine consumes resources needed by other subsystems, degrading system-wide performance before eventual failure.
+
+These failure modes share a common characteristic: localized faults produce global consequences. The system lacks isolation boundaries that would contain failures within their originating subsystems.
+
+\subsection{Resource Contention}
+
+Embedded Linux systems present hardware resources as exclusive devices. The ALSA audio subsystem permits only one process to hold the microphone at a time. A wake-word detector listening for activation phrases and a speech-to-text engine transcribing commands cannot both access the microphone simultaneously---yet both require audio input during the voice interaction sequence.
+
+Similarly, GPIO pins, serial ports, and display framebuffers are contested resources. Without explicit coordination mechanisms, multiple processes attempting concurrent access produce undefined behavior, deadlocks, or hardware damage in extreme cases.
+
+\subsection{The Core Problem}
+
+The fundamental problem addressed by this project is the design and implementation of a \textbf{multi-modal autonomous robot} that reliably performs simultaneous perception, cognition, and action on resource-constrained embedded hardware. The solution must:
+
+\begin{enumerate}
+    \item Enable concurrent operation of audio, vision, and motor subsystems
+    \item Isolate failures to prevent single-point system collapse
+    \item Coordinate shared resource access without deadlocks
+    \item Maintain safety guarantees independent of software state
+    \item Operate within the thermal and power constraints of portable deployment
+\end{enumerate}
+
+\section{Design Goals and Constraints}
+
+The system design was governed by explicit goals derived from the problem statement, balanced against practical constraints imposed by the deployment environment.
+
+\subsection{Primary Design Goals}
+
+\textbf{Goal 1: Concurrent Multi-Modal Operation.} The robot must simultaneously listen for voice commands, observe its environment through computer vision, and execute physical movement. No capability should block or disable another during normal operation.
+
+\textbf{Goal 2: Graceful Degradation.} Failure of any single subsystem must not terminate the entire robot. If the vision service crashes, the robot should continue responding to voice commands. If the cloud API becomes unreachable, basic local functionality should persist. The system should never enter an unrecoverable state requiring physical intervention.
+
+\textbf{Goal 3: Observable State.} The robot's internal state must be externally visible through multiple modalities: LED color patterns indicating operational phase, display graphics showing current activity, and structured logging for post-hoc analysis. Operators should never need to guess what the robot is doing or why.
+
+\textbf{Goal 4: Hardware-Enforced Safety.} Physical safety guarantees---particularly collision avoidance---must not depend on software correctness. Even if the main operating system kernel panics, the robot must not drive into obstacles. This requires safety logic to execute on hardware independent of the primary compute platform.
+
+\textbf{Goal 5: Maintainability.} The codebase must support modification and extension by developers unfamiliar with the original implementation. Clear module boundaries, consistent naming conventions, comprehensive configuration externalization, and explicit state machines contribute to this goal.
+
+\subsection{Deployment Constraints}
+
+\textbf{Constraint 1: Thermal Budget.} The Raspberry Pi 4 throttles CPU frequency when die temperature exceeds 80°C. Continuous high-load operation in ambient temperatures up to 40°C requires computational workloads to remain sustainable. Vision inference, audio processing, and background services must collectively maintain processor temperature below 60°C for reliable operation.
+
+\textbf{Constraint 2: Power Budget.} Portable operation requires battery power. The 5V rail supplying the Raspberry Pi, camera, microphone, and display must not experience voltage sag during motor current spikes. Motor and logic power domains require isolation.
+
+\textbf{Constraint 3: Memory Budget.} The Raspberry Pi 4 provides 8 GB RAM in the deployed configuration. Multiple concurrent processes---each loading AI models, maintaining network connections, and buffering sensor data---must operate within this envelope without triggering Linux OOM killer intervention.
+
+\textbf{Constraint 4: Network Availability.} Cloud API access for large language model inference assumes WiFi connectivity. The system must handle network unavailability gracefully, maintaining local functionality during connectivity gaps.
+
+\textbf{Constraint 5: Component Availability.} All hardware components must be commercially available through standard electronics distributors. The design avoids obsolete parts, custom fabrication, or components with extended lead times.
+
+\section{System Capabilities}
+
+The following capabilities are supported by the deployed codebase and runtime audits where evidence exists.
+
+\subsection{Voice Interaction}
+
+The system responds to a custom wake word (``Hey Veera'') detected using the Porcupine wake word engine. Upon wake word detection, the system transitions to an active listening state, indicated by LED state changes. Spoken commands are transcribed using Faster-Whisper running locally on the Raspberry Pi with int8 quantization.
+
+Transcribed text is submitted to a language model for interpretation (cloud or local depending on configuration). The language model returns structured responses specifying both verbal replies and physical actions. Text-to-speech synthesis using Piper converts verbal responses to audio output.
+
+The complete voice interaction cycle---from wake word through spoken response---varies with configuration and runtime conditions.
+
+\subsection{Visual Perception}
+
+The system performs continuous object detection using YOLOv11 Nano exported to ONNX format. The vision pipeline processes camera frames and publishes detected objects with bounding boxes, class labels, and confidence scores.
+
+Detection results are available to other subsystems for decision-making. The language model receives vision context enabling commands such as ``find the bottle'' or ``follow the person.''
+
+Frame processing operates at approximately 3-4 frames per second on CPU, sufficient for indoor navigation at walking speeds.
+
+\subsection{Autonomous Navigation}
+
+Motor control commands issued by the main processor are executed by the ESP32 microcontroller via UART communication. The ESP32 drives DC motors through an L298N H-bridge motor driver, supporting forward, backward, left turn, right turn, and stop commands.
+
+Navigation commands originate from language model responses interpreting user intent. The system can execute compound maneuvers such as ``turn around'' or ``back up slowly.''
+
+\subsection{Collision Avoidance}
+
+Three HC-SR04 ultrasonic sensors mounted on the robot chassis measure distances to obstacles in the forward arc. The ESP32 firmware continuously monitors these sensors at 20 Hz (50 ms cycle time).
+
+When any sensor detects an obstacle within 10 cm, the ESP32 immediately disables motor output regardless of commands from the Raspberry Pi. This hardware interlock prevents collisions even if the main processor software has crashed, entered an infinite loop, or issued erroneous commands.
+
+The collision avoidance system operates independently and cannot be overridden by software.
+
+\subsection{Environmental Sensing}
+
+An MQ-3 gas sensor connected to the ESP32's analog-to-digital converter monitors air quality. Sensor readings are transmitted to the Raspberry Pi as part of the telemetry stream and are available for language model context.
+
+\subsection{User Feedback}
+
+System state is communicated through three feedback channels:
+
+\begin{itemize}
+    \item \textbf{LED Ring}: An 8-LED NeoPixel ring displays color-coded patterns indicating operational phase (idle, listening, thinking, speaking, error)
+    \item \textbf{TFT Display}: A 3.5-inch SPI display renders facial expressions and status graphics
+    \item \textbf{Audio Output}: Synthesized speech and notification sounds provide auditory feedback
+\end{itemize}
+
+These feedback mechanisms are intended to provide rapid system state visibility.
+
+\section{Deployment Context}
+
+\subsection{Target Hardware Platform}
+
+The system deploys on a Raspberry Pi 4 Model B with 8 GB RAM, operating Debian-based Linux with kernel support for required peripherals. The processor is overclocked to 2.0 GHz with active cooling to maintain thermal stability under continuous AI workloads.
+
+An ESP32 DevKit microcontroller serves as the motor control subsystem, connected to the Raspberry Pi via UART at 115200 baud. The ESP32 executes time-critical sensor polling and motor control independently of the Linux scheduler.
+
+\subsection{Software Environment}
+
+The system runs multiple independent services managed by systemd, enabling automatic startup, crash recovery, and orderly shutdown. Each service operates within a dedicated Python virtual environment to isolate dependencies.
+
+Configuration is externalized to YAML files, enabling deployment customization without code modification. Logging is centralized to per-service log files.
+
+\subsection{Physical Form Factor}
+
+The robot is constructed on a wheeled chassis with differential drive (two independently controlled drive wheels plus casters for balance). The camera is mounted forward-facing for navigation and object detection. The microphone and speaker provide bidirectional audio communication. The display and LED ring are positioned for operator visibility.
+
+Total power is supplied by lithium-ion batteries with separate regulation for logic and motor domains.
+
+\section{Scope and Limitations}
+
+\subsection{Within Scope}
+
+This document covers the complete software architecture, hardware integration, and operational procedures for the Smart Car platform. Described capabilities are implemented in the codebase; verification coverage varies by subsystem.
+
+\subsection{Explicit Limitations}
+
+The following limitations are inherent to the current system design:
+
+\textbf{Network Dependency.} High-level language understanding requires cloud API connectivity. Without network access, the system cannot interpret complex commands, though basic reflexive behaviors (collision avoidance, wake word detection) continue operating.
+
+\textbf{No Acoustic Echo Cancellation.} The system cannot listen while speaking. During text-to-speech playback, the microphone is muted to prevent self-triggering. Users must wait for the robot to finish speaking before issuing new commands.
+
+\textbf{Startup Latency.} Python-based services require 10-20 seconds to load AI models and establish connections. The system is not immediately responsive after power-on.
+
+\textbf{Indoor Operation Only.} The ultrasonic sensors, camera calibration, and thermal management are designed for indoor environments. Outdoor operation with direct sunlight, extreme temperatures, or weather exposure is not supported.
+
+\textbf{Single-User Interaction.} The voice interface does not distinguish between speakers. Any person within microphone range can issue commands. Multi-user authorization is not implemented.
+
+\section{Chapter Summary}
+
+This chapter established the context, motivation, and scope of the Smart Car project. The system addresses fundamental architectural challenges in embedded robotics: concurrent multi-modal operation, failure isolation, resource coordination, and hardware-enforced safety.
+
+The deployed platform combines a Raspberry Pi 4 for AI workloads with an ESP32 for time-critical control, enabling autonomous voice-controlled operation with visual perception and collision avoidance. Documented capabilities include wake word activation, speech recognition, language model interpretation, object detection, motor control, and multi-channel user feedback.
+
+Explicit design constraints---thermal limits, power budgets, memory capacity, and network availability---shaped architectural decisions documented in subsequent chapters. Known limitations, particularly network dependency and acoustic echo cancellation absence, define operational boundaries.
+
+The following chapters examine each subsystem in detail, beginning with the hardware architecture that enables this capability distribution.

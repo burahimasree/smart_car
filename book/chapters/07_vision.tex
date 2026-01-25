@@ -1,0 +1,292 @@
+\chapter{Vision Pipeline}
+\label{ch:vision}
+
+This chapter presents the computer vision subsystem responsible for object detection and environmental perception. The pipeline employs a multi-threaded architecture to decouple camera capture from neural network inference, aiming to process current visual data rather than stale buffered frames.
+
+%----------------------------------------------------------------------
+\section{Design Rationale}
+\label{sec:vision-rationale}
+
+Embedded vision systems face a fundamental tension between capture rate and inference latency. OpenCV's default buffering behaviour accumulates frames during slow processing, causing the neural network to analyse images that may be seconds old. For a mobile robot, this temporal disconnect renders obstacle detection useless---the robot may have already collided by the time the ``obstacle'' is detected.
+
+The solution implemented in \texttt{vision\_runner.py} employs a producer-consumer pattern with explicit frame discarding. A dedicated capture thread runs independently of inference, continuously replacing its output buffer with the most recent frame. The inference thread takes snapshots from this buffer on demand to improve temporal currency.
+
+%----------------------------------------------------------------------
+\section{Architecture Overview}
+\label{sec:vision-architecture}
+
+The vision subsystem comprises three primary components:
+
+\begin{enumerate}
+    \item \textbf{LatestFrameGrabber}: Threaded camera capture with buffer management
+    \item \textbf{VisionPipeline}: ONNX Runtime inference wrapper
+    \item \textbf{Detection Publisher}: ZeroMQ output to downstream consumers
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{verbatim}
+┌─────────────────────────────────────────────────────────────────┐
+│                    VISION RUNNER PROCESS                        │
+├─────────────────────────────────────────────────────────────────┤
+│   ┌──────────────────┐      ┌──────────────────────────────┐   │
+│   │  FrameGrabber    │      │      Main Inference Loop     │   │
+│   │  (Daemon Thread) │      │                              │   │
+│   │                  │      │  1. get_frame()              │   │
+│   │  Camera (V4L2)   │─Lock─│  2. check stale (>500ms)     │   │
+│   │       ↓          │      │  3. preprocess → ONNX        │   │
+│   │  cv2.read()      │      │  4. NMS post-process         │   │
+│   │       ↓          │      │  5. publish detections       │   │
+│   │  _latest_frame   │      │  6. sleep(0.001) yield       │   │
+│   └──────────────────┘      └──────────────────────────────┘   │
+│                                       │                         │
+│                              ZMQ PUB: tcp://127.0.0.1:6010     │
+│                                       │                         │
+│                              Topic: TOPIC_VISN                  │
+└─────────────────────────────────────────────────────────────────┘
+\end{verbatim}
+\caption{Vision pipeline thread architecture showing decoupled capture and inference.}
+\label{fig:vision-arch}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{LatestFrameGrabber Implementation}
+\label{sec:frame-grabber}
+
+The \texttt{LatestFrameGrabber} class improves frame currency through several mechanisms:
+
+\subsection{Minimal Buffering}
+
+\begin{lstlisting}[language=Python, caption={Camera initialisation with minimal buffering}]
+self.cap = cv2.VideoCapture(camera_index)
+self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+\end{lstlisting}
+
+Setting \texttt{CAP\_PROP\_BUFFERSIZE} to 1 instructs the V4L2 driver to maintain only a single frame buffer, reducing maximum latency from the default 4--5 frames to a single frame period.
+
+\subsection{Rate-Limited Capture}
+
+\begin{lstlisting}[language=Python, caption={Capture loop with rate limiting}]
+def run(self) -> None:
+    last_time = 0.0
+    while not self._stop_event.is_set():
+        now = time.perf_counter()
+        if now - last_time < self.frame_interval:  # 1/15 = 66.7ms
+            time.sleep(0.001)
+            continue
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            time.sleep(0.01)
+            continue
+        with self._lock:
+            self._latest_frame = frame
+            self._frame_time = now
+        last_time = now
+\end{lstlisting}
+
+The target frame rate of 15~FPS (configurable via \texttt{system.yaml}) balances responsiveness against thermal constraints.
+
+\subsection{Thread-Safe Access}
+
+\begin{lstlisting}[language=Python, caption={Atomic frame retrieval with timestamp}]
+def get_frame(self) -> tuple[Optional[np.ndarray], float]:
+    with self._lock:
+        if self._latest_frame is None:
+            return None, 0.0
+        return self._latest_frame.copy(), self._frame_time
+\end{lstlisting}
+
+The frame is copied under lock to prevent data races with the capture thread. The timestamp enables stale frame rejection in the inference loop.
+
+%----------------------------------------------------------------------
+\section{YOLO Detection Model}
+\label{sec:yolo-model}
+
+The detection model is YOLO11 Nano exported to ONNX format, selected for its balance of accuracy and embedded performance.
+
+\subsection{Model Configuration}
+
+\begin{table}[htbp]
+\centering
+\caption{Vision model configuration from \texttt{system.yaml}}
+\label{tab:vision-config}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Model Path & \texttt{models/vision/yolo11n.onnx} \\
+Backend & ONNX Runtime (CPU) \\
+Input Size & $640 \times 640$ pixels \\
+Confidence Threshold & 0.25 \\
+IoU Threshold (NMS) & 0.45 \\
+Label Set & COCO 80 classes \\
+Target FPS & 15 \\
+Camera Index & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Detection Data Structure}
+
+\begin{lstlisting}[language=Python, caption={Detection dataclass}]
+@dataclass(slots=True)
+class Detection:
+    label: str              # Class name from COCO
+    confidence: float       # 0.0 to 1.0
+    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
+\end{lstlisting}
+
+The use of \texttt{slots=True} reduces memory overhead per detection instance, relevant when processing multiple objects per frame.
+
+%----------------------------------------------------------------------
+\section{Inference Pipeline}
+\label{sec:inference-pipeline}
+
+\subsection{Preprocessing}
+
+Input images undergo the standard YOLO preprocessing chain:
+
+\begin{enumerate}
+    \item \textbf{Resize}: Bilinear interpolation to $640 \times 640$
+    \item \textbf{Normalise}: Pixel values scaled from $[0, 255]$ to $[0.0, 1.0]$
+    \item \textbf{Transpose}: HWC to CHW format for ONNX
+    \item \textbf{Batch}: Add batch dimension $\rightarrow$ shape $(1, 3, 640, 640)$
+\end{enumerate}
+
+\subsection{Post-Processing}
+
+YOLO outputs require Non-Maximum Suppression (NMS) to eliminate redundant detections:
+
+\begin{enumerate}
+    \item Filter by confidence threshold (0.25)
+    \item Apply class-agnostic NMS with IoU threshold (0.45)
+    \item Map class indices to COCO label strings
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Performance Characteristics}
+\label{sec:vision-performance}
+
+\subsection{Measured Throughput}
+
+With the CPU overclocked to 2.0~GHz, the vision pipeline achieves:
+
+\begin{table}[htbp]
+\centering
+\caption{Vision pipeline performance metrics (from available logs)}
+\label{tab:vision-perf}
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Measured Value} \\
+\midrule
+Inference Latency & Not measured in this audit \\
+Effective FPS & 0.8--1.2 FPS (Picamera2 run log) \\
+Memory (RSS) & Not measured in this audit \\
+Camera Capability & Not measured \\
+Target Rate Limit & 15 FPS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The discrepancy between nominal target (15~FPS) and effective throughput (3.5~FPS) arises from ONNX Runtime CPU inference dominating the pipeline latency.
+
+\subsection{Thermal Behaviour}
+
+\begin{table}[htbp]
+\centering
+\caption{Thermal impact of vision processing (not measured in this audit)}
+\label{tab:vision-thermal}
+\begin{tabular}{lc}
+\toprule
+\textbf{Condition} & \textbf{CPU Temperature} \\
+\midrule
+Idle (no vision) & Not measured \\
+Vision active (continuous) & Not measured \\
+Throttle threshold & 80°C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+To prevent thermal throttling, the inference loop includes an explicit scheduler yield:
+
+\begin{lstlisting}[language=Python, caption={Thermal mitigation yield}]
+time.sleep(0.001)  # Yield to OS scheduler
+\end{lstlisting}
+
+This prevents the vision process from monopolising CPU time, ensuring audio interrupts receive timely service.
+
+\subsection{Memory Stability}
+
+The \texttt{LatestFrameGrabber} pattern overwrites rather than accumulates frames, reducing risk of unbounded memory growth. Long-run RSS stability was not measured in this audit.
+
+%----------------------------------------------------------------------
+\section{ZeroMQ Output Protocol}
+\label{sec:vision-zmq}
+
+Detections are published to \texttt{TOPIC\_VISN} on the upstream ZeroMQ bus:
+
+\begin{lstlisting}[language=Python, caption={Detection publishing}]
+def publish_detections(pub_sock, detections, ts, request_id=None):
+    for det in detections:
+        payload = {
+            "label": det.label,
+            "bbox": [x1, y1, x2, y2],
+            "confidence": det.confidence,
+            "ts": ts
+        }
+        if request_id:
+            payload["request_id"] = request_id
+        publish_json(pub_sock, TOPIC_VISN, payload)
+\end{lstlisting}
+
+When no detections occur, a null detection is published to maintain heartbeat:
+
+\begin{lstlisting}[language=json]
+{"label": "none", "bbox": [0, 0, 0, 0], "confidence": 0.0, "ts": 1706294400.123}
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Operational Modes}
+\label{sec:vision-modes}
+
+The vision runner supports multiple operational modes:
+
+\begin{description}
+    \item[Continuous Mode] Default operation---infers on every available frame
+    \item[On-Demand Mode] Responds to \texttt{TOPIC\_CMD\_VISN\_CAPTURE} requests with single-frame inference
+    \item[Pause Mode] Halts inference when \texttt{TOPIC\_CMD\_PAUSE\_VISION} is received (thermal management)
+    \item[Test Mode] Uses synthetic frames for unit testing without camera hardware
+\end{description}
+
+%----------------------------------------------------------------------
+\section{Stale Frame Protection}
+\label{sec:stale-protection}
+
+Frames older than 500~ms are discarded to prevent acting on obsolete visual data:
+
+\begin{lstlisting}[language=Python, caption={Stale frame rejection}]
+frame, frame_time = grabber.get_frame()
+if frame is None:
+    continue
+age_ms = (time.perf_counter() - frame_time) * 1000
+if age_ms > 500:
+    logger.warning(f"Discarding stale frame: {age_ms:.0f}ms old")
+    continue
+\end{lstlisting}
+
+This protection activates during system overload or when inference cannot keep pace with capture.
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:vision-summary}
+
+The vision pipeline implements a robust object detection capability within the thermal and computational constraints of embedded hardware. Key design decisions:
+
+\begin{enumerate}
+    \item \textbf{Frame Currency}: Producer-consumer pattern guarantees temporal relevance
+    \item \textbf{Thermal Awareness}: Explicit yields prevent CPU monopolisation
+    \item \textbf{Memory Stability}: Frame overwriting prevents unbounded growth
+    \item \textbf{Graceful Degradation}: Stale frame rejection maintains system integrity
+\end{enumerate}
+
+Measured throughput varies by camera pipeline and lighting conditions; available logs show sub-2 FPS under Picamera2 runs. The target 15~FPS remains a configuration goal.

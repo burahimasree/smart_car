@@ -1,0 +1,298 @@
+\chapter{Testing and Verification}
+\label{ch:testing}
+
+This chapter presents the testing strategy employed to validate system correctness across unit, integration, and end-to-end levels. The testing approach emphasises hardware abstraction to enable rapid iteration without physical robot access.
+
+%----------------------------------------------------------------------
+\section{Testing Philosophy}
+\label{sec:testing-philosophy}
+
+Embedded systems testing faces a fundamental challenge: the target hardware is often unavailable during development. The project addresses this through:
+
+\begin{enumerate}
+    \item \textbf{Mock Interfaces}: Hardware-dependent code is abstracted behind interfaces that can be substituted with deterministic mocks
+    \item \textbf{Isolated IPC}: Tests use dedicated ZeroMQ ports to avoid interference with running services
+    \item \textbf{Simulation Modes}: Each service supports ``dry-run'' or ``test'' modes that bypass hardware
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Test Infrastructure}
+\label{sec:test-infrastructure}
+
+\subsection{Test File Organisation}
+
+\begin{lstlisting}[language=bash, caption={Test file locations}]
+src/tests/
+├── test_config_loader.py      # Configuration parsing validation
+├── test_ipc_contract.py       # IPC topic constant verification
+├── test_modules.py            # Module import verification
+├── test_modules_exist.py      # File existence checks
+├── test_orchestrator_flow.py  # State machine integration
+├── test_pi_inference.py       # Vision inference mocking
+├── test_stt_fast_sim.py       # Faster-Whisper simulation
+├── test_stt_sim.py            # STT pipeline simulation
+├── test_stt_wrapper_sim.py    # STT wrapper simulation
+└── test_wakeword_sim.py       # Porcupine simulation
+
+scripts/
+├── test_ipc_integration.py    # ZeroMQ roundtrip testing
+└── test_uart_nav.py           # UART command verification
+
+run-tests/
+├── wake_to_stt_e2e.sh         # Wakeword→STT→LLM E2E
+└── llm_e2e.sh                 # LLM response verification
+\end{lstlisting}
+
+\subsection{Test Runner Configuration}
+
+Tests execute via pytest with the core virtual environment:
+
+\begin{lstlisting}[language=bash, caption={Test execution}]
+#!/usr/bin/env bash
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CORE_PYTHON="$ROOT_DIR/.venvs/core/bin/python"
+
+export PYTHONPATH="${PYTHONPATH:-$ROOT_DIR}"
+
+"$CORE_PYTHON" -m pytest src/tests/ -q
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Unit Testing}
+\label{sec:unit-testing}
+
+\subsection{IPC Contract Verification}
+
+Topic constants are verified to prevent silent protocol drift:
+
+\begin{lstlisting}[language=Python, caption={test\_ipc\_contract.py}]
+from src.core.ipc import TOPIC_WW_DETECTED, TOPIC_STT
+
+def test_topic_constants():
+    assert TOPIC_WW_DETECTED == b"ww.detected"
+    assert TOPIC_STT == b"stt.transcription"
+\end{lstlisting}
+
+This test fails if topic names are accidentally changed, preventing message routing breakage.
+
+\subsection{Mock Detector Pattern}
+
+Vision tests use a deterministic mock detector:
+
+\begin{lstlisting}[language=Python, caption={MockDetector for testing}]
+class MockDetector:
+    """Deterministic detector for pipeline testing without ONNX."""
+    
+    def load(self) -> None:
+        return  # No model to load
+    
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        height, width = frame.shape[:2]
+        bbox = (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
+        return [Detection(label="mock-object", confidence=0.99, bbox=bbox)]
+\end{lstlisting}
+
+This allows testing frame processing, ZeroMQ publication, and stale frame rejection without loading the YOLO model.
+
+\subsection{Configuration Loader Tests}
+
+\begin{lstlisting}[language=Python, caption={Config parsing verification}]
+def test_config_loader_parses_yaml():
+    config = load_config(Path("config/system.yaml"))
+    assert "ipc" in config
+    assert "stt" in config
+    assert config["ipc"]["upstream"] == "tcp://127.0.0.1:6010"
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Integration Testing}
+\label{sec:integration-testing}
+
+\subsection{Orchestrator Flow Test}
+
+The orchestrator state machine is tested with simulated ZeroMQ messages:
+
+\begin{lstlisting}[language=Python, caption={test\_orchestrator\_flow.py}]
+def test_orchestrator_sequence():
+    # Use isolated ports to avoid interference
+    upstream = "tcp://127.0.0.1:6210"
+    downstream = "tcp://127.0.0.1:6211"
+    os.environ["IPC_UPSTREAM"] = upstream
+    os.environ["IPC_DOWNSTREAM"] = downstream
+    
+    ctx = zmq.Context.instance()
+    
+    # Publisher to upstream (events to orchestrator)
+    pub_events = ctx.socket(zmq.PUB)
+    pub_events.connect(upstream)
+    
+    # Subscriber to downstream (commands from orchestrator)
+    sub_cmds = ctx.socket(zmq.SUB)
+    sub_cmds.connect(downstream)
+    for topic in [TOPIC_CMD_PAUSE_VISION, TOPIC_CMD_LISTEN_START, ...]:
+        sub_cmds.setsockopt(zmq.SUBSCRIBE, topic)
+    
+    # Start orchestrator in background thread
+    th = threading.Thread(target=run_orchestrator, daemon=True)
+    th.start()
+    time.sleep(0.4)  # Allow bind/setup
+    
+    # 1. Send wakeword event
+    send(TOPIC_WW_DETECTED, {
+        "timestamp": int(time.time()),
+        "keyword": "veera",
+        "confidence": 0.99
+    })
+    
+    # 2. Verify orchestrator publishes expected commands
+    assert receive_topic(sub_cmds, timeout=5) == TOPIC_CMD_PAUSE_VISION
+    assert receive_topic(sub_cmds, timeout=5) == TOPIC_CMD_LISTEN_START
+\end{lstlisting}
+
+\subsection{IPC Roundtrip Testing}
+
+ZeroMQ message flow is verified end-to-end:
+
+\begin{lstlisting}[language=Python, caption={IPC integration test pattern}]
+def test_ipc_roundtrip():
+    pub = make_publisher(config, channel="upstream", bind=True)
+    sub = make_subscriber(config, channel="upstream", bind=False)
+    sub.setsockopt(zmq.SUBSCRIBE, TOPIC_STT)
+    
+    test_payload = {"text": "hello world", "confidence": 0.95}
+    publish_json(pub, TOPIC_STT, test_payload)
+    
+    topic, data = sub.recv_multipart()
+    assert topic == TOPIC_STT
+    assert json.loads(data) == test_payload
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{End-to-End Testing}
+\label{sec:e2e-testing}
+
+\subsection{Wake-to-STT Pipeline Test}
+
+\begin{lstlisting}[language=bash, caption={wake\_to\_stt\_e2e.sh}]
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CORE_PYTHON="$ROOT_DIR/.venvs/core/bin/python"
+
+log(){
+    printf "%s [wake_to_stt_e2e] %s\n" \
+        "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$1"
+}
+
+export PYTHONPATH="${ROOT_DIR}"
+
+log "Executing wakeword->STT->LLM orchestration tests"
+"$CORE_PYTHON" -m pytest \
+    src/tests/test_wakeword_sim.py \
+    src/tests/test_stt_sim.py \
+    src/tests/test_orchestrator_flow.py -q
+
+log "Wake->STT e2e tests completed"
+\end{lstlisting}
+
+\subsection{Test Scenario: Audio Injection}
+
+\begin{enumerate}
+    \item Prepare WAV file with wakeword + command audio
+    \item Inject via simulated microphone stream (file input mode)
+    \item Verify \texttt{TOPIC\_WW\_DETECTED} published with correct keyword
+    \item Verify \texttt{TOPIC\_STT} published with correct transcript
+    \item Verify \texttt{TOPIC\_LLM\_REQ} contains expected command text
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Quality Gates}
+\label{sec:quality-gates}
+
+\subsection{Static Analysis}
+
+\begin{table}[htbp]
+\centering
+\caption{Quality gate tools (optional)}
+\label{tab:quality-gates}
+\begin{tabular}{llp{6cm}}
+\toprule
+\textbf{Tool} & \textbf{Purpose} & \textbf{Configuration} \\
+\midrule
+ruff & Linting & Optional linting tool \\
+mypy & Type checking & Optional static typing checks \\
+black & Formatting & Optional formatting tool \\
+isort & Import sorting & Optional import sorting tool \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Type Safety for IPC}
+
+Strict typing on message payloads prevents runtime errors:
+
+\begin{lstlisting}[language=Python, caption={Typed IPC payload}]
+from typing import TypedDict
+
+class STTPayload(TypedDict):
+    text: str
+    confidence: float
+    language: str
+    duration_ms: int
+
+def publish_stt_result(sock, payload: STTPayload) -> None:
+    publish_json(sock, TOPIC_STT, payload)  # mypy validates structure
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Hardware-in-the-Loop Testing}
+\label{sec:hil-testing}
+
+When physical hardware is available, additional verification can be performed:
+
+\begin{table}[htbp]
+\centering
+\caption{Hardware-in-the-loop test matrix}
+\label{tab:hil-tests}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{Test} & \textbf{Procedure} \\
+\midrule
+Microphone latency & Measure time from clap to wakeword detection \\
+Speaker output & Verify TTS audio reaches speaker at correct volume \\
+Motor response & Command FORWARD, measure wheel rotation \\
+Collision interlock & Place obstacle $<$10cm, verify motor refuses FORWARD \\
+Thermal stability & Run all services for 1 hour, verify temp $<$70°C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Continuous Integration Considerations}
+\label{sec:ci-considerations}
+
+The project supports CI execution without hardware:
+
+\begin{enumerate}
+    \item Many tests run in ``dry-run'' or ``mock'' mode by default
+    \item ZeroMQ tests use ephemeral ports (6210/6211) to avoid conflicts
+    \item No GPU or accelerator required---CPU-only inference mocked
+    \item Test duration varies by environment and configuration
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:testing-summary}
+
+The testing strategy provides confidence through:
+
+\begin{enumerate}
+    \item \textbf{Mock Abstraction}: Hardware interfaces substitutable with deterministic mocks
+    \item \textbf{Contract Testing}: IPC topic names and payload structures verified
+    \item \textbf{Flow Integration}: State machine transitions validated with simulated events
+    \item \textbf{Quality Gates}: Static analysis catches type errors and style violations
+    \item \textbf{E2E Scripts}: Shell scripts orchestrate full pipeline verification
+\end{enumerate}
+
+The combination of unit tests (fast, isolated), integration tests (ZeroMQ message flow), and E2E tests (full scenario) provides coverage appropriate for an embedded system where hardware access is intermittent.
