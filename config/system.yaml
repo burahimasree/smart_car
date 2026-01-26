@@ -107,7 +107,7 @@ tts:
   # Optional Azure Text-to-Speech (cloud). To use it, run src/tts/azure_tts_runner.py
   # as the TTS service instead of piper_runner.
   azure:
-    voice: hi-IN-NeerajNeural
+    voice: en-US-JennyNeural
     region: ${ENV:AZURE_SPEECH_REGION}
     key: ${ENV:AZURE_SPEECH_KEY}
     output: speakers   # speakers|wav

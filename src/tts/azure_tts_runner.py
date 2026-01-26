@@ -64,6 +64,12 @@ def _speak_text_speakers(text: str, voice: str, region: str, key: str, logger) -
         return False
     if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
         return True
+    if result.reason == speechsdk.ResultReason.Canceled:
+        cancellation = result.cancellation_details
+        logger.error("Azure TTS canceled: %s", cancellation.reason)
+        if cancellation.error_details:
+            logger.error("Azure TTS error details: %s", cancellation.error_details)
+        return False
     logger.error("Azure TTS failed: %s", getattr(result, "error_details", "unknown"))
     return False
 
@@ -84,6 +90,12 @@ def _speak_text_wav(text: str, voice: str, region: str, key: str, wav_path: Path
         return False
     if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
         return True
+    if result.reason == speechsdk.ResultReason.Canceled:
+        cancellation = result.cancellation_details
+        logger.error("Azure TTS canceled: %s", cancellation.reason)
+        if cancellation.error_details:
+            logger.error("Azure TTS error details: %s", cancellation.error_details)
+        return False
     logger.error("Azure TTS failed: %s", getattr(result, "error_details", "unknown"))
     return False
 
