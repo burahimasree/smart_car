@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import signal
 import sys
 import time
@@ -120,9 +121,7 @@ class AzureOpenAIRunner:
             return {}, ""
         system_prompt = (
             "You are ROBO, a smart assistant for a robotic car. "
-            "Reply with JSON only: {\"speak\": string, \"direction\": "
-            "'forward'|'backward'|'left'|'right'|'stop', \"track\": string}. "
-            "If no movement, use direction 'stop' and empty track."
+            "Reply in a short, friendly sentence."
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -181,7 +180,12 @@ class AzureOpenAIRunner:
                 self.logger.error("Azure OpenAI fallback request failed: %s", exc)
 
         if not content:
-            content = "I'm here, but I didn't catch that. Please try again."
+            fallback_options = [
+                "I'm here. Can you say that again?",
+                "I didn't catch that. Please repeat.",
+                "Sorry, I missed it. Try again.",
+            ]
+            content = random.choice(fallback_options)
             self.logger.warning("Azure OpenAI returned empty content after retries; using fallback response")
 
         parsed = self._extract_json(content)
