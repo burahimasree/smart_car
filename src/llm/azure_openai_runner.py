@@ -134,19 +134,11 @@ class AzureOpenAIRunner:
                 model=self.deployment,
                 messages=messages,
                 max_completion_tokens=160,
-                response_format={"type": "json_object"},
+                temperature=1,
             )
         except Exception as exc:  # noqa: BLE001
-            self.logger.warning("Azure OpenAI JSON request failed, retrying without response_format: %s", exc)
-            try:
-                resp = self.client.chat.completions.create(
-                    model=self.deployment,
-                    messages=messages,
-                    max_completion_tokens=160,
-                )
-            except Exception as exc2:  # noqa: BLE001
-                self.logger.error("Azure OpenAI request failed: %s", exc2)
-                raise
+            self.logger.error("Azure OpenAI request failed: %s", exc)
+            raise
 
         content = ""
         try:
@@ -170,7 +162,23 @@ class AzureOpenAIRunner:
             content = ""
 
         if not content:
-            self.logger.warning("Azure OpenAI returned empty content")
+            self.logger.warning("Azure OpenAI returned empty content; retrying with plain prompt")
+            try:
+                resp2 = self.client.chat.completions.create(
+                    model=self.deployment,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": text[:300]},
+                    ],
+                    max_completion_tokens=160,
+                    temperature=1,
+                )
+                try:
+                    content = (resp2.choices[0].message.content or "").strip()
+                except Exception:
+                    content = ""
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("Azure OpenAI fallback request failed: %s", exc)
 
         parsed = self._extract_json(content)
         return parsed, content
