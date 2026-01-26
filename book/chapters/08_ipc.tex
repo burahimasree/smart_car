@@ -1,0 +1,266 @@
+\chapter{Inter-Process Communication}
+
+% ============================================================================
+% CHAPTER: INTER-PROCESS COMMUNICATION
+% Responsibility: ZeroMQ bus, topics, message formats, UART bridge
+% Scope: Communication infrastructure between services
+% Consolidates: 08_ipc, 06_ipc_signaling
+% ============================================================================
+
+\section{Chapter Context}
+
+Inter-process communication (IPC) forms the nervous system of the Smart Car architecture. All coordination between services---perception, cognition, and actuation---flows through message channels. This chapter documents the verified IPC infrastructure as observed at runtime.
+
+The IPC design solves a critical embedded systems problem: how can independent processes communicate reliably without shared memory corruption, deadlocks, or tight coupling that propagates failures?
+
+\section{Deployment Constraints}
+
+\subsection{Latency Requirements}
+
+The voice interaction loop imposes soft latency constraints. Users expect response within a few seconds of speaking. The IPC layer must contribute minimal latency to the overall budget.
+
+\subsection{Reliability Requirements}
+
+Services crash and restart during normal operation. The IPC layer must tolerate service restarts without requiring full system reboot. Message loss during restart is acceptable; message corruption is not.
+
+\subsection{Resource Constraints}
+
+The Raspberry Pi provides limited memory. IPC infrastructure should not require substantial RAM allocation for buffers or connection state.
+
+\section{ZeroMQ Bus Architecture}
+
+The system uses ZeroMQ (ZMQ) for inter-process messaging. ZMQ was selected over alternatives for specific reasons documented from the V\&V audit.
+
+\subsection{Technology Selection Rationale}
+
+\begin{table}[H]
+\centering
+\caption{IPC Technology Comparison}
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Technology} & \textbf{Startup Time} & \textbf{Memory} & \textbf{Decision} \\ \hline
+ROS 2 & High & High & Rejected: Too heavy \\ \hline
+D-Bus & Moderate & Low & Rejected: Method-call oriented \\ \hline
+Unix Sockets & Low & Minimal & Rejected: No pub/sub \\ \hline
+ZeroMQ & Low & Low & Selected \\ \hline
+\end{tabular}
+\end{table}
+
+ZMQ provides publish-subscribe semantics with TCP reliability and automatic reconnection after peer failure.
+
+\subsection{Dual-Bus Topology}
+
+Two ZMQ buses separate message flow by direction:
+
+\begin{table}[H]
+\centering
+\caption{ZMQ Bus Configuration (Verified from config/system.yaml)}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Name} & \textbf{Address} & \textbf{Direction} \\ \hline
+Upstream & tcp://127.0.0.1:6010 & Services → Orchestrator \\ \hline
+Downstream & tcp://127.0.0.1:6011 & Orchestrator → Services \\ \hline
+\end{tabular}
+\end{table}
+
+\textbf{Binding Pattern}: The orchestrator binds to both buses. All other services connect. This asymmetry ensures:
+
+\begin{itemize}
+    \item The orchestrator is the stable endpoint
+    \item Services can crash and reconnect without bus disruption
+    \item Multiple services can subscribe to the same topics
+\end{itemize}
+
+\subsection{Measured Performance}
+
+\begin{table}[H]
+\centering
+\caption{ZMQ Performance Characteristics}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Metric} & \textbf{Measured Value} \\ \hline
+Transport & TCP loopback (127.0.0.1) \\ \hline
+Message Latency & Not measured in this audit \\ \hline
+Reconnection Time & Automatic (value not measured) \\ \hline
+Socket Linger & Requires explicit configuration \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Topic Catalogue}
+
+All 17 topics are defined in \texttt{src/core/ipc.py} as byte literals. Topics are organized by function.
+
+\subsection{Event Topics (Upstream)}
+
+Events flow from sensors and services to the orchestrator.
+
+\begin{table}[H]
+\centering
+\caption{Upstream Event Topics}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Topic} & \textbf{Publisher} & \textbf{Payload} \\ \hline
+\texttt{ww.detected} & voice-pipeline & \{keyword, confidence\} \\ \hline
+\texttt{stt.transcription} & voice-pipeline & \{text, confidence, optional timing\} \\ \hline
+\texttt{llm.response} & llm & \{speak, direction, track\} \\ \hline
+\texttt{visn.object} & vision & \{detections: [{label, confidence, bbox}]\} \\ \hline
+\texttt{esp32.raw} & uart & \{sensor telemetry fields\} \\ \hline
+\texttt{system.health} & various & \{service, status, memory\} \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Command Topics (Downstream)}
+
+Commands flow from the orchestrator to actuator services.
+
+\begin{table}[H]
+\centering
+\caption{Downstream Command Topics}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Topic} & \textbf{Subscriber} & \textbf{Payload} \\ \hline
+\texttt{llm.request} & llm & \{text, vision?, direction\} \\ \hline
+\texttt{tts.speak} & tts & \{text\} \\ \hline
+\texttt{nav.command} & uart & \{direction, optional speed/duration\} \\ \hline
+\texttt{cmd.pause.vision} & vision & \{pause: bool\} \\ \hline
+\texttt{cmd.listen.start} & voice-pipeline & \{\} \\ \hline
+\texttt{cmd.listen.stop} & voice-pipeline & \{\} \\ \hline
+\texttt{display.state} & display & \{state, phase, timestamp\} \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Unused Topics}
+
+Topics are defined centrally in \texttt{ipc.py}. Usage varies by service and deployment configuration; topics not observed at runtime should be treated as optional.
+
+\section{Message Format}
+
+All ZMQ messages use a two-part multipart format:
+
+\begin{verbatim}
+Part 0: Topic (bytes)    Example: b"stt.transcription"
+Part 1: Payload (bytes)  Example: b'{"text": "move forward", "confidence": 0.92}'
+\end{verbatim}
+
+\subsection{Payload Encoding}
+
+Payloads are JSON-encoded UTF-8 strings. The \texttt{publish\_json()} helper function handles serialization:
+
+\begin{verbatim}
+def publish_json(sock, topic, payload):
+    sock.send_multipart([topic, json.dumps(payload).encode()])
+\end{verbatim}
+
+\subsection{Subscription Filtering}
+
+ZMQ topic filtering is prefix-based. Subscribing to \texttt{b"visn"} receives all messages starting with those bytes. The current implementation uses exact topic matching for clarity.
+
+\section{UART Bridge}
+
+The UART bridge provides the interface between the ZMQ bus and the ESP32 microcontroller.
+
+\subsection{Serial Configuration}
+
+\begin{table}[H]
+\centering
+\caption{UART Parameters (Verified from config/system.yaml)}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\ \hline
+Device & /dev/serial0 \\ \hline
+Baud Rate & 115200 \\ \hline
+Data Bits & 8 \\ \hline
+Stop Bits & 1 \\ \hline
+Parity & None \\ \hline
+Timeout & 1.0 second \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Throughput Analysis}
+
+At 115200 baud with 8N1 encoding (10 bits per byte):
+
+\begin{verbatim}
+Maximum throughput: 115200 / 10 = 11,520 bytes/second
+Typical command size: ~20 bytes
+Command transmission time: 20 / 11520 ≈ 1.7 ms
+\end{verbatim}
+
+The serial link is not a bottleneck for motor control. Network latency to cloud APIs dominates the system latency budget.
+
+\subsection{Protocol Format}
+
+Commands to ESP32 use simple ASCII tokens:
+
+\begin{verbatim}
+FORWARD
+BACKWARD
+LEFT
+RIGHT
+STOP
+SCAN
+RESET
+CLEARBLOCK
+\end{verbatim}
+
+Telemetry from ESP32 uses CSV format:
+
+\begin{verbatim}
+DATA:S1:43,S2:120,S3:99,MQ2:1240,OBSTACLE:0
+\end{verbatim}
+
+\section{Failure Modes}
+
+\subsection{Service Crash}
+
+When a service crashes, its ZMQ socket closes. The orchestrator observes no messages from that topic but continues operating. When the service restarts, ZMQ automatically reconnects.
+
+\textbf{Observed Behavior}: Service crashes cause message gaps; recovery depends on restart timing.
+
+\subsection{Socket Linger Issue}
+
+If a service crashes without proper socket cleanup, the TCP port may remain in TIME\_WAIT state and delay restart.
+
+\textbf{Mitigation}: Services should set \texttt{ZMQ\_LINGER=0} to close sockets immediately on process termination.
+
+\subsection{Message Ordering}
+
+ZMQ provides in-order delivery within a single socket. Messages from different publishers have no guaranteed ordering. The orchestrator handles this by treating each message independently.
+
+\section{Design Rationale}
+
+\subsection{Why Not ROS?}
+
+ROS (Robot Operating System) is the standard in academic robotics. It was rejected for this project because:
+
+\begin{enumerate}
+    \item \textbf{Startup Time}: ROS node spinup is heavier than ZeroMQ on Pi-class hardware
+    \item \textbf{Memory Footprint}: ROS runtime has a higher footprint
+    \item \textbf{Complexity}: Full dependency tree (DDS, type system) exceeds project needs
+\end{enumerate}
+
+ZMQ provides the required functionality (pub/sub, reliable delivery, automatic reconnection) without the overhead.
+
+\subsection{Why TCP Not IPC?}
+
+ZMQ supports \texttt{ipc://} transport using Unix domain sockets, which would have lower latency than TCP loopback. TCP was chosen for:
+
+\begin{enumerate}
+    \item \textbf{Debugging}: TCP traffic is visible to standard network tools
+    \item \textbf{Future Flexibility}: Could expose buses to remote monitoring
+    \item \textbf{Measured Adequacy}: Latency is acceptable for the system's response budget
+\end{enumerate}
+
+\section{Chapter Summary}
+
+The IPC layer implements a dual-bus ZeroMQ architecture with 17 defined topics. Key verified characteristics:
+
+\begin{itemize}
+    \item \textbf{Upstream bus} (port 6010): event topics from sensors to orchestrator
+    \item \textbf{Downstream bus} (port 6011): command topics from orchestrator to actuators
+    \item \textbf{Message format}: Topic bytes + JSON payload
+    \item \textbf{UART bridge}: 115200 baud serial to ESP32
+    \item \textbf{Latency}: Not measured in this audit
+\end{itemize}
+
+The IPC design prioritizes reliability and failure isolation over raw performance. Services can crash and restart without affecting the message bus. The next chapter examines the audio pipeline that publishes wakeword and transcription events to this bus.

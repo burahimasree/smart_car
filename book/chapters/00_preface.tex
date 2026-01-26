@@ -1,0 +1,19 @@
+\chapter*{Preface: The Industrial Mindset}
+\addcontentsline{toc}{chapter}{Preface}
+
+\section*{Why This Exists}
+Most "Smart Car" projects are toys. They use a simple loop (`while True: check_sensor()`) that freezes the moment the robot tries to listen or think. They use spaghetti code that makes adding a new sensor a nightmare.
+
+Our team set out to delete the word "Toy" from the equation.
+
+We wanted a system that could:
+\begin{itemize}
+    \item **Listen** while it was moving (Async Audio).
+    \item **Think** without blinding itself (Threaded Vision).
+    \item **Survive** a component failure (Service-Oriented Architecture).
+\end{itemize}
+
+\section*{The Hardware Reality}
+We eschewed expensive, proprietary AI accelerators (like Google Coral) in favor of **Raw Compute Optimization**. By overclocking the Raspberry Pi 4 to 2.0GHz and implementing a custom "Bang-Bang" motor controller on an ESP32, we achieved real-time performance on commodity hardware.
+
+This book is not just a report. It is a \textbf{blueprint}. It contains the exact wiring, code, and physics measurements required to replicate our work.

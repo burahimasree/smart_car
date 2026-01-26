@@ -1,0 +1,30 @@
+\chapter{Virtual Environments on Constrained Hardware}
+
+\section{The ``Dependency Hell'' Reality}
+On a desktop, a 2GB Docker container is acceptable. On an embedded filesystem (microSD), every megabyte counts.
+We explicitly confirmed the location of environments at:
+\texttt{/home/dev/smart\_car/.venvs/}
+
+\section{Disk \& Memory Impact}
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Env} & \textbf{Primary Lib} & \textbf{Est. Disk} & \textbf{Role} \\ \hline
+\texttt{stte} & Faster-Whisper (Torch) & $\sim$600 MB & Heavy AI \\ \hline
+\texttt{visn} & ONNX Runtime & $\sim$300 MB & Heavy AI \\ \hline
+\texttt{ttse} & Piper + SoundDevice & $\sim$150 MB & Real-time I/O \\ \hline
+\texttt{llme} & Requests & $\sim$50 MB & Lightweight \\ \hline
+\end{tabular}
+\end{table}
+
+\section{Why Isolation?}
+During our audit (Phase 1), we observed:
+\begin{itemize}
+    \item \texttt{stte} relies on \texttt{numpy < 2.0} (legacy Torch requirement).
+    \item \texttt{visn} relies on \texttt{numpy >= 2.0} (modern OpenCV optimization).
+\end{itemize}
+Trying to install these in a single \texttt{requirements.txt} would cause an unresolvable conflict (`ResolutionImpossible`). The 4-venv strategy is not just "clean" architecture; it is a **hard requirement** for valid dependency resolution on ARM64.
+
+\section{Start-up cost}
+Activating a venv adds measurable latency (~200ms) to the service start time due to `sys.path` manipulation. This is negligible compared to the 1.5s Python interpreter initialization time.

@@ -1,0 +1,35 @@
+\chapter{The Nervous System}
+
+\section{The Compute Core}
+The central intelligence is a **Raspberry Pi 4 Model B (8GB RAM)**.
+Standard industrial systems often use NVIDIA Jetson, but we chose the Pi to demonstrate that **Optimization beats Raw Power**.
+
+\subsection{Overclocking Strategy}
+To compensate for the lack of a TPU (Tensor Processing Unit), we pushed the Cortex-A72 CPU beyond its stock limits.
+\begin{itemize}
+    \item \textbf{Stock Clock}: 1.50 GHz
+    \item \textbf{Our Clock}: \textbf{2.00 GHz} (`arm_freq=2000`)
+    \item \textbf{Voltage}: Overvolt 6 (`over_voltage=6`)
+    \item \textbf{Cooling}: Custom Metal Heat Sink Case with Twin Active Fans.
+    \item \textbf{Result}: ~33\% boost in floating-point ops per second (FLOPS), critical for Faster-Whisper and ONNX Runtime.
+\end{itemize}
+
+\section{The Messaging Bus (IPC)}
+We rejected ROS (Robot Operating System) due to its heavy JVM/Python-overhead on startup. Instead, we architected a lightweight **ZeroMQ (ZMQ)** bus.
+
+\begin{figure}[h]
+    \centering
+    % Placeholder for IPC Diagram
+    \begin{verbatim}
+    [Vision] --(pub:6010)--> [ SUB: Orchestrator :PUB ] --(pub:6011)--> [Sensors]
+    [Audio ] --(pub:6010)--> [                        ] --(pub:6011)--> [Display]
+    \end{verbatim}
+    \caption{ZMQ Pub/Sub Topology}
+\end{figure}
+
+\subsection{Topic Topology}
+\begin{itemize}
+    \item \texttt{visn.detections}: JSON payload of YOLOv11 bounding boxes.
+    \item \texttt{stt.result}: Transcribed user speech.
+    \item \texttt{llm.response}: Actionable JSON instructions from the Brain.
+\end{itemize}

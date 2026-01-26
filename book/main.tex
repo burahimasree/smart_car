@@ -1,0 +1,181 @@
+\documentclass[12pt, a4paper, twoside, openright]{book}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{bookmark}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{listingsutf8}
+\usepackage{newunicodechar}
+\usepackage{pmboxdraw}
+\usepackage{color}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{tikz}
+\usepackage{float}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{emptypage}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{amsmath}
+%\usepackage{minted} % Removed for stability
+\usepackage{setspace} % For line spacing
+\usepackage{ragged2e} % For alignment control
+\usepackage{times}    % Times New Roman
+
+% Geometry set to Indian standards
+\geometry{
+    a4paper,
+    inner=3.5cm,  % Binding margin
+    outer=1.25cm, 
+    top=2.5cm, 
+    bottom=1.25cm
+}
+
+% 1.5 Line Spacing
+\onehalfspacing
+
+% Left Alignment (RaggedRight) as requested by user
+\RaggedRight
+
+% Colors
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.94}
+\definecolor{chaptergrey}{rgb}{0.4,0.4,0.4}
+\definecolor{linenum}{rgb}{0.5,0.5,0.5}
+
+% Unicode character fallbacks for pdflatex
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{→}{\ensuremath{\rightarrow}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{↔}{\ensuremath{\leftrightarrow}}
+\newunicodechar{┌}{+}
+\newunicodechar{┐}{+}
+\newunicodechar{└}{+}
+\newunicodechar{┘}{+}
+\newunicodechar{├}{+}
+\newunicodechar{┤}{+}
+\newunicodechar{┬}{+}
+\newunicodechar{┴}{+}
+\newunicodechar{┼}{+}
+\newunicodechar{─}{-}
+\newunicodechar{│}{|}
+
+% Code Listing Style
+\lstdefinestyle{pythonstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{blue}\bfseries,
+    numberstyle=\tiny\color{linenum},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=8pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{black!30},
+    xleftmargin=15pt,
+    framexleftmargin=15pt,
+}
+\lstdefinelanguage{json}{
+  morestring=[b]",
+  stringstyle=\color{codepurple},
+  showstringspaces=false,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{codegreen}\itshape,
+  morekeywords={true,false,null},
+  keywordstyle=\color{blue}\bfseries
+}
+
+\lstset{
+  style=pythonstyle,
+  language=Python,
+  inputencoding=utf8,
+  extendedchars=true,
+  literate=
+    {┌}{{+}}1
+    {┐}{{+}}1
+    {└}{{+}}1
+    {┘}{{+}}1
+    {├}{{+}}1
+    {┤}{{+}}1
+    {┬}{{+}}1
+    {┴}{{+}}1
+    {┼}{{+}}1
+    {─}{{-}}1
+    {│}{{|}}1
+    {≈}{{$\approx$}}1
+    {→}{{$\rightarrow$}}1
+    {←}{{$\leftarrow$}}1
+    {↔}{{$\leftrightarrow$}}1
+}
+
+% Chapter Formatting
+\titleformat{\chapter}[display]
+  {\normalfont\bfseries\Huge}
+  {\filleft\fontsize{70}{80}\selectfont\color{chaptergrey}\thechapter}
+  {1ex}
+  {\titlerule[2pt]\vspace{1ex}\filleft}
+  [\vspace{1ex}\titlerule]
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\thepage\hspace{1em}\textit{\leftmark}}
+\fancyhead[RO]{\textit{\rightmark}\hspace{1em}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Hyperref Setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=blue,
+    urlcolor=blue,
+}
+
+\begin{document}
+
+% ==================== FRONT MATTER ====================
+\frontmatter
+\input{front/titlepage}
+\input{front/certificate}
+\input{front/declaration}
+\input{front/acknowledgement}
+\input{front/dedication}
+\input{front/abstract}
+\tableofcontents
+\listoffigures
+
+% ==================== MAIN MATTER ====================
+\mainmatter
+
+\input{chapters/01_overview}
+\input{chapters/02_hardware}
+\input{chapters/03_architecture}
+\input{chapters/05_body_firmware}
+\input{chapters/06_audio}
+\input{chapters/06_human_interface}
+\input{chapters/07_vision}
+\input{chapters/08_ipc}
+\input{chapters/09_orchestration}
+\input{chapters/10_testing}
+\input{chapters/11_operational}
+\input{chapters/14_limitations}
+
+% ==================== BACK MATTER ====================
+\backmatter
+\input{back/appendix}
+\input{back/bibliography}
+
+\end{document}

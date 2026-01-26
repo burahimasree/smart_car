@@ -1,0 +1,41 @@
+\chapter{Virtual Environments \& Dependencies}
+
+\section{The Isolation Strategy}
+Dependency hell is a major killer of embedded Python projects. \texttt{smart\_car} solves this by using **four dedicated virtual environments**.
+
+\begin{enumerate}
+    \item \texttt{stte}: Speech-to-Text Environment
+    \begin{itemize}
+        \item \textbf{Key Libs}: `faster-whisper`, `pvporcupine`, `numpy`
+        \item \textbf{Why}: Whisper requires specific PyTorch versions that may conflict with Vision.
+    \end{itemize}
+    
+    \item \texttt{ttse}: Text-to-Speech Environment
+    \begin{itemize}
+        \item \textbf{Key Libs}: `piper-tts`, `sounddevice`
+    \end{itemize}
+    
+    \item \texttt{visn}: Vision Environment
+    \begin{itemize}
+        \item \textbf{Key Libs}: `opencv-python-headless`, `onnxruntime`, `numpy`
+        \item \textbf{Why}: OpenCV + ONNX runtime are heavy. Isolating them prevents version clashes.
+    \end{itemize}
+    
+    \item \texttt{llme}: LLM Environment
+    \begin{itemize}
+        \item \textbf{Key Libs}: `google-generativeai`, `requests`
+        \item \textbf{Why}: Minimal footprint for pure API calls.
+    \end{itemize}
+\end{enumerate}
+
+\section{Management Scripts}
+\begin{itemize}
+    \item \texttt{scripts/setup\_envs.sh}: Bootstraps all venvs from zero.
+    \item \texttt{scripts/recreate\_venvs.sh}: Nukes and rebuilds specific environments (nuclear option).
+\end{itemize}
+
+Devs must activate the correct venv before running tools manually:
+\begin{lstlisting}[language=bash]
+source stte/bin/activate
+python tools/record_sample.py
+\end{lstlisting}

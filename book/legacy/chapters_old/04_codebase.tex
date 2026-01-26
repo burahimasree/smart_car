@@ -1,0 +1,25 @@
+\chapter{Codebase Organization}
+
+The repository structure reflects the Service-Oriented Architecture.
+
+\section{Root Topology}
+\begin{itemize}
+    \item \texttt{src/}: Source code for all agents/services.
+    \item \texttt{config/}: YAML configuration files.
+    \item \texttt{scripts/}: Build and maintenance scripts (`recreate\_venvs.sh`).
+    \item \texttt{systemd/}: Service unit files for deployment.
+    \item \texttt{tools/}: Standalone diagnostic scripts.
+\end{itemize}
+
+\section{Source Map (\texttt{src/})}
+\begin{itemize}
+    \item \texttt{src/core/}: Shared libraries (`ipc.py`, `config\_loader.py`, `orchestrator.py`).
+    \item \texttt{src/audio/}: Unified audio pipeline.
+    \item \texttt{src/vision/}: YOLO detector and pipeline.
+    \item \texttt{src/llm/}: Gateway to Cloud Gemini.
+    \item \texttt{src/uart/}: Serial bridge to specific hardware.
+    \item \texttt{src/stt/}, \texttt{src/tts/}: Engines for speech processing.
+\end{itemize}
+
+\section{Navigation Strategy}
+Developers should start at \texttt{src/core/orchestrator.py} to understand the system state machine, then trace individual topics (e.g., `TOPIC\_STT`) to their respective producers (`src/audio/unified\_voice\_pipeline.py`).

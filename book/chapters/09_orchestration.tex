@@ -1,0 +1,323 @@
+\chapter{Service Orchestration}
+\label{ch:orchestration}
+
+This chapter details the orchestrator service that coordinates all system components through a centralised state machine. The orchestrator implements the ``single source of truth'' principle---all subsystems derive their behaviour from the current orchestrator phase rather than maintaining independent state.
+
+%----------------------------------------------------------------------
+\section{Architectural Role}
+\label{sec:orch-role}
+
+The orchestrator occupies the apex of the service hierarchy:
+
+\begin{figure}[htbp]
+\centering
+\begin{verbatim}
+                    ┌─────────────────┐
+                    │   Orchestrator  │
+                    │  (State Owner)  │
+                    └────────┬────────┘
+                             │
+              Downstream Bus │ tcp://127.0.0.1:6011
+            (Commands/State) │
+    ┌────────────┬───────────┼───────────┬────────────┐
+    │            │           │           │            │
+┌───┴───┐  ┌─────┴────┐ ┌────┴────┐ ┌────┴───┐ ┌──────┴─────┐
+│ Voice │  │  Vision  │ │   LLM   │ │  TTS   │ │   LED/UI   │
+│Pipeline│  │  Runner  │ │ Service │ │Service │ │  Services  │
+└───┬───┘  └─────┬────┘ └────┬────┘ └────┬───┘ └──────┬─────┘
+    │            │           │           │            │
+    └────────────┴───────────┴───────────┴────────────┘
+                             │
+              Upstream Bus   │ tcp://127.0.0.1:6010
+              (Events)       │
+                    ┌────────┴────────┐
+                    │   Orchestrator  │
+                    │  (Event Sink)   │
+                    └─────────────────┘
+\end{verbatim}
+\caption{Orchestrator as central coordinator binding upstream events to downstream commands.}
+\label{fig:orch-topology}
+\end{figure}
+
+The orchestrator binds both ZeroMQ buses (ports 6010 and 6011), establishing itself as the sole entity that must survive for the system to function.
+
+%----------------------------------------------------------------------
+\section{Phase State Machine}
+\label{sec:state-machine}
+
+The orchestrator implements a finite state machine with five phases:
+
+\begin{table}[htbp]
+\centering
+\caption{Orchestrator phase definitions}
+\label{tab:phases}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{Phase} & \textbf{Description} \\
+\midrule
+IDLE & Passive monitoring; awaiting wakeword or auto-trigger \\
+LISTENING & Audio capture active; voice pipeline recording user speech \\
+THINKING & LLM inference in progress; awaiting response generation \\
+SPEAKING & TTS playback active; outputting synthesised speech \\
+ERROR & Recovery mode; attempting to restore normal operation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{State Transition Table}
+
+\begin{lstlisting}[language=Python, caption={Orchestrator transition definitions}]
+TRANSITIONS = {
+    (Phase.IDLE, "wakeword"): Phase.LISTENING,
+    (Phase.IDLE, "auto_trigger"): Phase.LISTENING,
+    (Phase.IDLE, "manual_trigger"): Phase.LISTENING,
+    (Phase.LISTENING, "stt_valid"): Phase.THINKING,
+    (Phase.LISTENING, "stt_invalid"): Phase.IDLE,
+    (Phase.LISTENING, "stt_timeout"): Phase.IDLE,
+    (Phase.THINKING, "llm_with_speech"): Phase.SPEAKING,
+    (Phase.THINKING, "llm_no_speech"): Phase.IDLE,
+    (Phase.SPEAKING, "tts_done"): Phase.IDLE,
+    (Phase.IDLE, "health_error"): Phase.ERROR,
+    (Phase.LISTENING, "health_error"): Phase.ERROR,
+    (Phase.THINKING, "health_error"): Phase.ERROR,
+    (Phase.SPEAKING, "health_error"): Phase.ERROR,
+    (Phase.ERROR, "health_ok"): Phase.IDLE,
+    (Phase.ERROR, "error_timeout"): Phase.IDLE,
+}
+\end{lstlisting}
+
+Invalid transitions are logged and ignored, preventing illegal state combinations.
+
+\subsection{Transition Logic}
+
+\begin{lstlisting}[language=Python, caption={Phase transition implementation}]
+def _transition(self, event_type: str) -> bool:
+    key = (self._phase, event_type)
+    next_phase = self.TRANSITIONS.get(key)
+    if next_phase is None:
+        logger.debug("IGNORED: event '%s' illegal in phase %s",
+                     event_type, self._phase.name)
+        return False
+    if next_phase == self._phase:
+        return False
+    old_phase = self._phase
+    self._phase = next_phase
+    self._phase_entered_ts = time.time()
+    logger.info("PHASE: %s -> %s (event: %s)",
+                old_phase.name, next_phase.name, event_type)
+    return True
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Phase Entry Actions}
+\label{sec:phase-actions}
+
+Each phase transition triggers coordinated commands to downstream services.
+
+\subsection{Entering LISTENING}
+
+\begin{lstlisting}[language=Python, caption={LISTENING phase entry}]
+def _enter_listening(self, from_wakeword: bool = False) -> None:
+    self._last_interaction_ts = time.time()
+    if from_wakeword:
+        self._publish_led_state("wakeword_detected")
+    else:
+        self._publish_led_state("listening")
+    # Pause vision to reduce CPU contention
+    publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": True})
+    # Start audio capture
+    publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_START, {"start": True})
+\end{lstlisting}
+
+Note the vision pause command---this reduces CPU load during audio capture, preventing STT quality degradation.
+
+\subsection{Entering THINKING}
+
+\begin{lstlisting}[language=Python, caption={THINKING phase entry}]
+def _enter_thinking(self, text: str, vision: Optional[Dict] = None) -> None:
+    self._publish_led_state("thinking")
+    payload: Dict[str, Any] = {"text": text}
+    if vision:
+        payload["vision"] = vision
+    payload["direction"] = self._last_nav_direction
+    publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
+\end{lstlisting}
+
+The LLM request includes current navigation state and optional vision context for multimodal reasoning.
+
+\subsection{Entering SPEAKING}
+
+\begin{lstlisting}[language=Python, caption={SPEAKING phase entry}]
+def _enter_speaking(self, text: str, direction: Optional[str] = None) -> None:
+    self._publish_led_state("tts_processing")
+    if direction and direction != "stop":
+        self._last_nav_direction = direction
+        publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction})
+    publish_json(self.cmd_pub, TOPIC_TTS, {"text": text})
+\end{lstlisting}
+
+Navigation commands extracted from LLM responses are dispatched before TTS begins.
+
+%----------------------------------------------------------------------
+\section{LED State Protocol}
+\label{sec:led-protocol}
+
+The orchestrator publishes granular LED states for user feedback:
+
+\begin{table}[htbp]
+\centering
+\caption{LED state definitions with colour assignments}
+\label{tab:led-states}
+\begin{tabular}{lll}
+\toprule
+\textbf{State} & \textbf{Colour/Pattern} & \textbf{Meaning} \\
+\midrule
+\texttt{idle} & Dim cyan breathing & Awaiting wakeword \\
+\texttt{wakeword\_detected} & Bright green flash & ``I heard you'' \\
+\texttt{listening} & Bright blue sweep & Capturing audio \\
+\texttt{transcribing} & Purple pulse & STT processing \\
+\texttt{thinking} & Pink pulse & LLM processing \\
+\texttt{tts\_processing} & Orange pulse & Generating speech \\
+\texttt{speaking} & Dark green chase & Playing audio \\
+\texttt{error} & Red blink & System error \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{lstlisting}[language=Python, caption={LED state publication}]
+def _publish_led_state(self, state: str) -> None:
+    publish_json(self.cmd_pub, TOPIC_DISPLAY_STATE, {
+        "state": state,
+        "phase": self._phase.name,
+        "timestamp": int(time.time()),
+    })
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Auto-Trigger Mechanism}
+\label{sec:auto-trigger}
+
+The orchestrator supports periodic auto-triggering for proactive interaction:
+
+\begin{lstlisting}[language=Python, caption={Auto-trigger configuration}]
+orch_cfg = self.config.get("orchestrator", {}) or {}
+self.auto_trigger_enabled = bool(orch_cfg.get("auto_trigger_enabled", True))
+self.auto_trigger_interval = float(orch_cfg.get("auto_trigger_interval", 60.0))
+\end{lstlisting}
+
+When enabled, the system autonomously enters LISTENING every 60 seconds (configurable). In the current configuration, auto-trigger is disabled by default.
+
+%----------------------------------------------------------------------
+\section{Systemd Integration}
+\label{sec:systemd}
+
+\subsection{Service Unit File}
+
+\begin{lstlisting}[language=bash, caption={orchestrator.service}]
+[Unit]
+Description=Smart Car Orchestrator (ZMQ event router)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/home/dev/smart_car
+Environment=PROJECT_ROOT=/home/dev/smart_car
+Environment=PYTHONPATH=/home/dev/smart_car
+ExecStart=/home/dev/smart_car/.venvs/stte/bin/python \
+          -m src.core.orchestrator
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/dev/smart_car/logs/orchestrator.log
+StandardError=append:/home/dev/smart_car/logs/orchestrator.log
+
+[Install]
+WantedBy=multi-user.target
+\end{lstlisting}
+
+\subsection{Boot Order}
+
+The orchestrator starts after network is available but does not depend on other services. It binds the ZeroMQ buses first; agents connect afterwards:
+
+\begin{verbatim}
+NetworkManager (wait-online) ────────────────> [Online]
+                                                   │
+Orchestrator ─────────> [Binds 6010/6011] ────────┤
+                                                   │
+Voice Pipeline ─────────> [Connects] ─────────────┤
+Vision Runner ──────────> [Warms ONNX] ───────────┤
+LLM Service ────────────> [Loads Model] ──────────┘
+\end{verbatim}
+
+%----------------------------------------------------------------------
+\section{Failure Handling}
+\label{sec:failure-handling}
+
+\subsection{Service Crashes}
+
+Systemd provides automatic restart for user-space crashes:
+
+\begin{lstlisting}[language=bash]
+Restart=on-failure
+RestartSec=3
+\end{lstlisting}
+
+\subsection{ZeroMQ Socket Recovery}
+
+The dual-bus architecture isolates failure domains:
+
+\begin{itemize}
+    \item \textbf{Agent Crash}: Agents use \texttt{connect()}, so their sockets close cleanly. The bus remains operational.
+    \item \textbf{Orchestrator Crash}: The orchestrator uses \texttt{bind()}. If it crashes, the TCP ports enter \texttt{TIME\_WAIT} for $\sim$60 seconds unless \texttt{SO\_REUSEADDR} is set.
+\end{itemize}
+
+\subsection{Zombie Socket Risk}
+
+If the orchestrator crashes without properly closing ZeroMQ sockets (missing \texttt{LINGER} option), the ports may remain bound. The 3-second restart delay allows socket cleanup in most cases.
+
+\subsection{Hardware Watchdog}
+
+\begin{itemize}
+    \item \textbf{Status}: Not currently enabled
+    \item \textbf{Risk}: Kernel panics leave the system unrecoverable
+    \item \textbf{Recommendation}: Enable Broadcom hardware watchdog via \texttt{/dev/watchdog}
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Resource Consumption}
+\label{sec:orch-resources}
+
+The orchestrator is lightweight, serving primarily as an event router:
+
+\begin{table}[htbp]
+\centering
+\caption{Orchestrator resource usage (not measured in this audit)}
+\label{tab:orch-resources}
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Memory (RSS) & Not measured \\
+CPU (idle) & Not measured \\
+CPU (transition burst) & Not measured \\
+ZeroMQ Sockets & 2 (pub + sub) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:orch-summary}
+
+The orchestrator implements the system's ``single source of truth'' coordination:
+
+\begin{enumerate}
+    \item \textbf{Centralised State}: All phases managed in one process
+    \item \textbf{Explicit Transitions}: Invalid state changes are rejected
+    \item \textbf{Coordinated Commands}: Phase entry triggers downstream actions
+    \item \textbf{Visual Feedback}: LED states provide human-readable system status
+    \item \textbf{Failure Recovery}: Systemd restart with ZeroMQ auto-reconnect
+\end{enumerate}
+
+The design trades off distributed resilience for implementation simplicity---a single orchestrator crash brings the system down, but the coordination logic remains tractable and debuggable.

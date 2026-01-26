@@ -1,0 +1,20 @@
+\chapter{Design Decisions Driven by Physics}
+
+\section{The 2.0 GHz Constraint}
+The decision to stay on Python (vs C++) is vindicated by the CPU Overclock.
+At 2.0 GHz, Python's overhead is masked enough to allow "Soft Real-Time" performance.
+If we were restricted to a Pi 3 (1.2 GHz), the Vision Pipeline (3.5 FPS) would drop to <1 FPS, making the system unusable.
+
+\section{Memory Abundance Strategy}
+With **7.6 GB** of available RAM, we chose **Isolation (Venvs)** over **Efficiency (Shared Libs)**.
+We waste ~500 MB on duplicate libraries (numpy installed 3 times).
+\textbf{Payoff}: Zero dependency conflicts. On a 1GB board (Pi Zero 2W), this architecture would crash immediately (OOM).
+
+\section{Cloud Dependency}
+The 8.15s network blocking time is the price paid for using Gemini.
+We utilize the "Thick Client" model:
+\begin{itemize}
+    \item \textbf{Thick}: Vision and STT are local.
+    \item \textbf{Thin}: Brain is remote.
+\end{itemize}
+This balances Privacy (Voice/Images don't strictly need to leave, though currently Gemini receives text) with Capability.

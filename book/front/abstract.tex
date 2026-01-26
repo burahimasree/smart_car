@@ -1,0 +1,25 @@
+% Abstract
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+This document presents the complete technical architecture of an autonomous voice-controlled robotic platform built on commodity hardware. Unlike academic prototypes, this system was engineered for real-world deployment, emphasizing reliability, modularity, and measurable performance.
+
+\section*{The Challenge}
+Building a robot that can simultaneously listen, see, think, and act requires solving difficult resource contention problems. Most hobby-grade implementations use a single-threaded ``while True'' loop that freezes the moment any subsystem demands computation.
+
+\section*{Our Approach}
+We implemented a \textbf{Service-Oriented Architecture (SOA)} on a Raspberry Pi 4, using ZeroMQ for inter-process communication. Each sensory modality (audio, vision, sensors) runs as an independent service, publishing events to a central orchestrator.
+
+Key innovations include:
+\begin{itemize}[noitemsep]
+    \item \textbf{Phase-Driven State Machine}: A 17-transition FSM that prevents illegal state combinations.
+    \item \textbf{Dual-Brain Architecture}: High-level cognition on Pi, low-level reflexes on ESP32.
+    \item \textbf{Hardware Interlocks}: The ESP32 can override Pi commands to prevent collisions.
+    \item \textbf{Latest-Frame Grabber}: A threading pattern that eliminates camera buffer lag.
+\end{itemize}
+
+\section*{Result}
+The system achieves a \textbf{2.8-second end-to-end latency} from voice command to wheel motion, operating reliably at 2.0 GHz with thermal stability below 60°C.
+
+\vspace{1cm}
+\textbf{Keywords}: Embedded AI, ZeroMQ, Raspberry Pi, ESP32, Voice Assistant, Computer Vision, YOLO

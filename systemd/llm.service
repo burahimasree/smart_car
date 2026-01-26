@@ -1,5 +1,5 @@
 [Unit]
-Description=Smart Car LLM (Gemini)
+Description=Smart Car LLM (Local TinyLlama)
 After=orchestrator.service
 Requires=orchestrator.service
 StartLimitIntervalSec=0
@@ -13,7 +13,8 @@ Environment=PROJECT_ROOT=/home/dev/smart_car
 Environment=PYTHONPATH=/home/dev/smart_car
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/dev/smart_car/.env
-ExecStart=/home/dev/smart_car/.venvs/llme/bin/python -m src.llm.gemini_runner
+# Use local LLM (TinyLlama via llama.cpp) - no API rate limits!
+ExecStart=/home/dev/smart_car/.venvs/llme/bin/python -m src.llm.local_llm_runner
 Restart=on-failure
 RestartSec=3
 StandardOutput=append:/home/dev/smart_car/logs/llm.log

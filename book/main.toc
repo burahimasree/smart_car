@@ -1,0 +1,310 @@
+\contentsline {chapter}{Abstract}{ix}{chapter*.4}%
+\contentsline {chapter}{\numberline {1}System Overview}{1}{chapter.1}%
+\contentsline {section}{\numberline {1.1}Introduction and Motivation}{1}{section.1.1}%
+\contentsline {section}{\numberline {1.2}Problem Statement}{2}{section.1.2}%
+\contentsline {subsection}{\numberline {1.2.1}Blocking Operation Failures}{2}{subsection.1.2.1}%
+\contentsline {subsection}{\numberline {1.2.2}Cascading Failure Propagation}{2}{subsection.1.2.2}%
+\contentsline {subsection}{\numberline {1.2.3}Resource Contention}{2}{subsection.1.2.3}%
+\contentsline {subsection}{\numberline {1.2.4}The Core Problem}{3}{subsection.1.2.4}%
+\contentsline {section}{\numberline {1.3}Design Goals and Constraints}{3}{section.1.3}%
+\contentsline {subsection}{\numberline {1.3.1}Primary Design Goals}{3}{subsection.1.3.1}%
+\contentsline {subsection}{\numberline {1.3.2}Deployment Constraints}{4}{subsection.1.3.2}%
+\contentsline {section}{\numberline {1.4}System Capabilities}{4}{section.1.4}%
+\contentsline {subsection}{\numberline {1.4.1}Voice Interaction}{4}{subsection.1.4.1}%
+\contentsline {subsection}{\numberline {1.4.2}Visual Perception}{5}{subsection.1.4.2}%
+\contentsline {subsection}{\numberline {1.4.3}Autonomous Navigation}{5}{subsection.1.4.3}%
+\contentsline {subsection}{\numberline {1.4.4}Collision Avoidance}{5}{subsection.1.4.4}%
+\contentsline {subsection}{\numberline {1.4.5}Environmental Sensing}{5}{subsection.1.4.5}%
+\contentsline {subsection}{\numberline {1.4.6}User Feedback}{5}{subsection.1.4.6}%
+\contentsline {section}{\numberline {1.5}Deployment Context}{6}{section.1.5}%
+\contentsline {subsection}{\numberline {1.5.1}Target Hardware Platform}{6}{subsection.1.5.1}%
+\contentsline {subsection}{\numberline {1.5.2}Software Environment}{6}{subsection.1.5.2}%
+\contentsline {subsection}{\numberline {1.5.3}Physical Form Factor}{6}{subsection.1.5.3}%
+\contentsline {section}{\numberline {1.6}Scope and Limitations}{6}{section.1.6}%
+\contentsline {subsection}{\numberline {1.6.1}Within Scope}{6}{subsection.1.6.1}%
+\contentsline {subsection}{\numberline {1.6.2}Explicit Limitations}{7}{subsection.1.6.2}%
+\contentsline {section}{\numberline {1.7}Chapter Summary}{7}{section.1.7}%
+\contentsline {chapter}{\numberline {2}Hardware Architecture}{9}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Chapter Context}{9}{section.2.1}%
+\contentsline {section}{\numberline {2.2}Dual-Brain Architecture}{9}{section.2.2}%
+\contentsline {subsection}{\numberline {2.2.1}The Cortex: Raspberry Pi 4 Model B}{9}{subsection.2.2.1}%
+\contentsline {subsection}{\numberline {2.2.2}The Brainstem: ESP32 DevKit}{10}{subsection.2.2.2}%
+\contentsline {subsection}{\numberline {2.2.3}Inter-Processor Communication}{10}{subsection.2.2.3}%
+\contentsline {section}{\numberline {2.3}Overclocking Configuration}{11}{section.2.3}%
+\contentsline {section}{\numberline {2.4}Power Distribution}{11}{section.2.4}%
+\contentsline {subsection}{\numberline {2.4.1}Dual-Rail Architecture}{11}{subsection.2.4.1}%
+\contentsline {subsection}{\numberline {2.4.2}Power Budget Constraints}{11}{subsection.2.4.2}%
+\contentsline {section}{\numberline {2.5}Sensor Subsystems}{12}{section.2.5}%
+\contentsline {subsection}{\numberline {2.5.1}Vision: Camera Module}{12}{subsection.2.5.1}%
+\contentsline {subsection}{\numberline {2.5.2}Audio: USB Sound Interface}{12}{subsection.2.5.2}%
+\contentsline {subsection}{\numberline {2.5.3}Proximity: Ultrasonic Sensors}{12}{subsection.2.5.3}%
+\contentsline {subsection}{\numberline {2.5.4}Environmental: Gas Sensor}{13}{subsection.2.5.4}%
+\contentsline {section}{\numberline {2.6}Actuator Subsystems}{13}{section.2.6}%
+\contentsline {subsection}{\numberline {2.6.1}Locomotion: DC Motors and Driver}{13}{subsection.2.6.1}%
+\contentsline {subsection}{\numberline {2.6.2}Visual Feedback: NeoPixel LED Ring}{13}{subsection.2.6.2}%
+\contentsline {subsection}{\numberline {2.6.3}Display: TFT Screen}{13}{subsection.2.6.3}%
+\contentsline {section}{\numberline {2.7}Operating System Environment}{14}{section.2.7}%
+\contentsline {subsection}{\numberline {2.7.1}Linux Distribution}{14}{subsection.2.7.1}%
+\contentsline {subsection}{\numberline {2.7.2}Boot Timing}{14}{subsection.2.7.2}%
+\contentsline {section}{\numberline {2.8}Hardware Bill of Materials}{15}{section.2.8}%
+\contentsline {section}{\numberline {2.9}Chapter Summary}{15}{section.2.9}%
+\contentsline {chapter}{\numberline {3}Software Architecture}{17}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Chapter Context}{17}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Architectural Principles}{17}{section.3.2}%
+\contentsline {subsection}{\numberline {3.2.1}Process Isolation}{17}{subsection.3.2.1}%
+\contentsline {subsection}{\numberline {3.2.2}Message-Driven Communication}{17}{subsection.3.2.2}%
+\contentsline {subsection}{\numberline {3.2.3}Explicit State Management}{18}{subsection.3.2.3}%
+\contentsline {section}{\numberline {3.3}Service Topology}{18}{section.3.3}%
+\contentsline {section}{\numberline {3.4}Message Bus Architecture}{18}{section.3.4}%
+\contentsline {subsection}{\numberline {3.4.1}Dual-Bus Topology}{18}{subsection.3.4.1}%
+\contentsline {subsection}{\numberline {3.4.2}Message Format}{19}{subsection.3.4.2}%
+\contentsline {section}{\numberline {3.5}Data Flow Architecture}{19}{section.3.5}%
+\contentsline {subsection}{\numberline {3.5.1}Perception Path}{19}{subsection.3.5.1}%
+\contentsline {subsection}{\numberline {3.5.2}Cognition Path}{20}{subsection.3.5.2}%
+\contentsline {subsection}{\numberline {3.5.3}Action Path}{20}{subsection.3.5.3}%
+\contentsline {section}{\numberline {3.6}State Machine Design}{20}{section.3.6}%
+\contentsline {subsection}{\numberline {3.6.1}Phase Definitions}{20}{subsection.3.6.1}%
+\contentsline {subsection}{\numberline {3.6.2}Transition Constraints}{20}{subsection.3.6.2}%
+\contentsline {subsection}{\numberline {3.6.3}Timeout Enforcement}{21}{subsection.3.6.3}%
+\contentsline {section}{\numberline {3.7}Virtual Environment Isolation}{21}{section.3.7}%
+\contentsline {section}{\numberline {3.8}Failure Isolation Boundaries}{21}{section.3.8}%
+\contentsline {subsection}{\numberline {3.8.1}Process-Level Isolation}{21}{subsection.3.8.1}%
+\contentsline {subsection}{\numberline {3.8.2}Bus-Level Isolation}{22}{subsection.3.8.2}%
+\contentsline {subsection}{\numberline {3.8.3}Hardware-Level Isolation}{22}{subsection.3.8.3}%
+\contentsline {section}{\numberline {3.9}Configuration Architecture}{22}{section.3.9}%
+\contentsline {section}{\numberline {3.10}Chapter Summary}{22}{section.3.10}%
+\contentsline {chapter}{\numberline {4}ESP32 Firmware}{23}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Design Philosophy}{23}{section.4.1}%
+\contentsline {section}{\numberline {4.2}Hardware Interface}{23}{section.4.2}%
+\contentsline {subsection}{\numberline {4.2.1}Pin Assignments}{23}{subsection.4.2.1}%
+\contentsline {subsection}{\numberline {4.2.2}UART Configuration}{23}{subsection.4.2.2}%
+\contentsline {section}{\numberline {4.3}Main Control Loop}{24}{section.4.3}%
+\contentsline {section}{\numberline {4.4}Collision Avoidance System}{24}{section.4.4}%
+\contentsline {subsection}{\numberline {4.4.1}Safety Zones}{24}{subsection.4.4.1}%
+\contentsline {subsection}{\numberline {4.4.2}Collision Check Implementation}{24}{subsection.4.4.2}%
+\contentsline {subsection}{\numberline {4.4.3}Hardware Interlock Guarantee}{27}{subsection.4.4.3}%
+\contentsline {section}{\numberline {4.5}Telemetry Protocol}{27}{section.4.5}%
+\contentsline {subsection}{\numberline {4.5.1}Packet Format}{27}{subsection.4.5.1}%
+\contentsline {subsection}{\numberline {4.5.2}Transmission Rate}{27}{subsection.4.5.2}%
+\contentsline {section}{\numberline {4.6}Command Protocol}{27}{section.4.6}%
+\contentsline {subsection}{\numberline {4.6.1}Supported Commands}{27}{subsection.4.6.1}%
+\contentsline {subsection}{\numberline {4.6.2}Command Validation}{27}{subsection.4.6.2}%
+\contentsline {section}{\numberline {4.7}Special Manoeuvres}{28}{section.4.7}%
+\contentsline {subsection}{\numberline {4.7.1}360-Degree Scan}{28}{subsection.4.7.1}%
+\contentsline {subsection}{\numberline {4.7.2}Emergency Stop}{29}{subsection.4.7.2}%
+\contentsline {section}{\numberline {4.8}Ultrasonic Sensor Management}{29}{section.4.8}%
+\contentsline {subsection}{\numberline {4.8.1}Sequential Triggering}{29}{subsection.4.8.1}%
+\contentsline {subsection}{\numberline {4.8.2}Timeout Handling}{30}{subsection.4.8.2}%
+\contentsline {section}{\numberline {4.9}Motor Control}{30}{section.4.9}%
+\contentsline {subsection}{\numberline {4.9.1}Differential Drive}{30}{subsection.4.9.1}%
+\contentsline {section}{\numberline {4.10}Timing Characteristics}{30}{section.4.10}%
+\contentsline {section}{\numberline {4.11}Summary}{30}{section.4.11}%
+\contentsline {chapter}{\numberline {5}Audio Pipeline}{33}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Chapter Context}{33}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Deployment Constraints}{33}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Hardware Constraints}{33}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Latency Budget}{33}{subsection.5.2.2}%
+\contentsline {subsection}{\numberline {5.2.3}Thermal Constraints}{34}{subsection.5.2.3}%
+\contentsline {section}{\numberline {5.3}Unified Pipeline Architecture}{34}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}Thread Model}{34}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}State Machine}{34}{subsection.5.3.2}%
+\contentsline {subsection}{\numberline {5.3.3}State Transitions}{34}{subsection.5.3.3}%
+\contentsline {section}{\numberline {5.4}Audio Capture}{35}{section.5.4}%
+\contentsline {subsection}{\numberline {5.4.1}Hardware Configuration}{35}{subsection.5.4.1}%
+\contentsline {subsection}{\numberline {5.4.2}Shared Access via dsnoop}{35}{subsection.5.4.2}%
+\contentsline {section}{\numberline {5.5}Wakeword Detection}{35}{section.5.5}%
+\contentsline {subsection}{\numberline {5.5.1}Porcupine Engine}{35}{subsection.5.5.1}%
+\contentsline {subsection}{\numberline {5.5.2}Performance Characteristics}{35}{subsection.5.5.2}%
+\contentsline {section}{\numberline {5.6}Speech-to-Text}{36}{section.5.6}%
+\contentsline {subsection}{\numberline {5.6.1}Faster-Whisper Engine}{36}{subsection.5.6.1}%
+\contentsline {subsection}{\numberline {5.6.2}Voice Activity Detection}{36}{subsection.5.6.2}%
+\contentsline {subsection}{\numberline {5.6.3}Transcription Process}{36}{subsection.5.6.3}%
+\contentsline {subsection}{\numberline {5.6.4}Performance Characteristics}{37}{subsection.5.6.4}%
+\contentsline {section}{\numberline {5.7}Text-to-Speech}{37}{section.5.7}%
+\contentsline {subsection}{\numberline {5.7.1}Piper Engine}{37}{subsection.5.7.1}%
+\contentsline {subsection}{\numberline {5.7.2}Performance}{37}{subsection.5.7.2}%
+\contentsline {section}{\numberline {5.8}Resource Consumption}{37}{section.5.8}%
+\contentsline {subsection}{\numberline {5.8.1}Memory Profile}{37}{subsection.5.8.1}%
+\contentsline {subsection}{\numberline {5.8.2}CPU Profile}{38}{subsection.5.8.2}%
+\contentsline {section}{\numberline {5.9}Latency Analysis}{38}{section.5.9}%
+\contentsline {subsection}{\numberline {5.9.1}End-to-End Voice Latency}{38}{subsection.5.9.1}%
+\contentsline {subsection}{\numberline {5.9.2}Bottleneck Analysis}{38}{subsection.5.9.2}%
+\contentsline {section}{\numberline {5.10}Failure Modes}{38}{section.5.10}%
+\contentsline {subsection}{\numberline {5.10.1}Microphone Unavailable}{38}{subsection.5.10.1}%
+\contentsline {subsection}{\numberline {5.10.2}Wakeword False Positives}{38}{subsection.5.10.2}%
+\contentsline {subsection}{\numberline {5.10.3}STT Timeout}{39}{subsection.5.10.3}%
+\contentsline {subsection}{\numberline {5.10.4}Self-Triggering}{39}{subsection.5.10.4}%
+\contentsline {section}{\numberline {5.11}Chapter Summary}{39}{section.5.11}%
+\contentsline {chapter}{\numberline {6}Human Interface}{41}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Design Philosophy}{41}{section.6.1}%
+\contentsline {section}{\numberline {6.2}LED Ring Service}{41}{section.6.2}%
+\contentsline {subsection}{\numberline {6.2.1}Hardware Configuration}{41}{subsection.6.2.1}%
+\contentsline {subsection}{\numberline {6.2.2}State-to-Pattern Mapping}{42}{subsection.6.2.2}%
+\contentsline {subsection}{\numberline {6.2.3}Animation Implementation}{42}{subsection.6.2.3}%
+\contentsline {subsection}{\numberline {6.2.4}Pattern Generation}{43}{subsection.6.2.4}%
+\contentsline {subsection}{\numberline {6.2.5}Dry-Run Mode}{43}{subsection.6.2.5}%
+\contentsline {section}{\numberline {6.3}TFT Display Service}{43}{section.6.3}%
+\contentsline {subsection}{\numberline {6.3.1}Framebuffer Rendering}{43}{subsection.6.3.1}%
+\contentsline {subsection}{\numberline {6.3.2}Display Parameters}{44}{subsection.6.3.2}%
+\contentsline {subsection}{\numberline {6.3.3}State Visualisation}{44}{subsection.6.3.3}%
+\contentsline {subsection}{\numberline {6.3.4}Colour Scheme}{44}{subsection.6.3.4}%
+\contentsline {subsection}{\numberline {6.3.5}Expressive Face Rendering}{45}{subsection.6.3.5}%
+\contentsline {subsection}{\numberline {6.3.6}Display Renderer Class}{45}{subsection.6.3.6}%
+\contentsline {section}{\numberline {6.4}Event Subscription}{45}{section.6.4}%
+\contentsline {section}{\numberline {6.5}Systemd Service Units}{46}{section.6.5}%
+\contentsline {subsection}{\numberline {6.5.1}LED Ring Service}{46}{subsection.6.5.1}%
+\contentsline {subsection}{\numberline {6.5.2}Display Service}{47}{subsection.6.5.2}%
+\contentsline {section}{\numberline {6.6}Resource Consumption}{47}{section.6.6}%
+\contentsline {section}{\numberline {6.7}Debugging with Visual Feedback}{47}{section.6.7}%
+\contentsline {section}{\numberline {6.8}Summary}{48}{section.6.8}%
+\contentsline {chapter}{\numberline {7}Vision Pipeline}{49}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Design Rationale}{49}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Architecture Overview}{49}{section.7.2}%
+\contentsline {section}{\numberline {7.3}LatestFrameGrabber Implementation}{50}{section.7.3}%
+\contentsline {subsection}{\numberline {7.3.1}Minimal Buffering}{50}{subsection.7.3.1}%
+\contentsline {subsection}{\numberline {7.3.2}Rate-Limited Capture}{50}{subsection.7.3.2}%
+\contentsline {subsection}{\numberline {7.3.3}Thread-Safe Access}{51}{subsection.7.3.3}%
+\contentsline {section}{\numberline {7.4}YOLO Detection Model}{51}{section.7.4}%
+\contentsline {subsection}{\numberline {7.4.1}Model Configuration}{51}{subsection.7.4.1}%
+\contentsline {subsection}{\numberline {7.4.2}Detection Data Structure}{52}{subsection.7.4.2}%
+\contentsline {section}{\numberline {7.5}Inference Pipeline}{52}{section.7.5}%
+\contentsline {subsection}{\numberline {7.5.1}Preprocessing}{52}{subsection.7.5.1}%
+\contentsline {subsection}{\numberline {7.5.2}Post-Processing}{52}{subsection.7.5.2}%
+\contentsline {section}{\numberline {7.6}Performance Characteristics}{52}{section.7.6}%
+\contentsline {subsection}{\numberline {7.6.1}Measured Throughput}{52}{subsection.7.6.1}%
+\contentsline {subsection}{\numberline {7.6.2}Thermal Behaviour}{53}{subsection.7.6.2}%
+\contentsline {subsection}{\numberline {7.6.3}Memory Stability}{53}{subsection.7.6.3}%
+\contentsline {section}{\numberline {7.7}ZeroMQ Output Protocol}{53}{section.7.7}%
+\contentsline {section}{\numberline {7.8}Operational Modes}{54}{section.7.8}%
+\contentsline {section}{\numberline {7.9}Stale Frame Protection}{54}{section.7.9}%
+\contentsline {section}{\numberline {7.10}Summary}{54}{section.7.10}%
+\contentsline {chapter}{\numberline {8}Inter-Process Communication}{57}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Chapter Context}{57}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Deployment Constraints}{57}{section.8.2}%
+\contentsline {subsection}{\numberline {8.2.1}Latency Requirements}{57}{subsection.8.2.1}%
+\contentsline {subsection}{\numberline {8.2.2}Reliability Requirements}{57}{subsection.8.2.2}%
+\contentsline {subsection}{\numberline {8.2.3}Resource Constraints}{58}{subsection.8.2.3}%
+\contentsline {section}{\numberline {8.3}ZeroMQ Bus Architecture}{58}{section.8.3}%
+\contentsline {subsection}{\numberline {8.3.1}Technology Selection Rationale}{58}{subsection.8.3.1}%
+\contentsline {subsection}{\numberline {8.3.2}Dual-Bus Topology}{58}{subsection.8.3.2}%
+\contentsline {subsection}{\numberline {8.3.3}Measured Performance}{59}{subsection.8.3.3}%
+\contentsline {section}{\numberline {8.4}Topic Catalogue}{59}{section.8.4}%
+\contentsline {subsection}{\numberline {8.4.1}Event Topics (Upstream)}{59}{subsection.8.4.1}%
+\contentsline {subsection}{\numberline {8.4.2}Command Topics (Downstream)}{59}{subsection.8.4.2}%
+\contentsline {subsection}{\numberline {8.4.3}Unused Topics}{59}{subsection.8.4.3}%
+\contentsline {section}{\numberline {8.5}Message Format}{60}{section.8.5}%
+\contentsline {subsection}{\numberline {8.5.1}Payload Encoding}{60}{subsection.8.5.1}%
+\contentsline {subsection}{\numberline {8.5.2}Subscription Filtering}{60}{subsection.8.5.2}%
+\contentsline {section}{\numberline {8.6}UART Bridge}{60}{section.8.6}%
+\contentsline {subsection}{\numberline {8.6.1}Serial Configuration}{60}{subsection.8.6.1}%
+\contentsline {subsection}{\numberline {8.6.2}Throughput Analysis}{60}{subsection.8.6.2}%
+\contentsline {subsection}{\numberline {8.6.3}Protocol Format}{61}{subsection.8.6.3}%
+\contentsline {section}{\numberline {8.7}Failure Modes}{61}{section.8.7}%
+\contentsline {subsection}{\numberline {8.7.1}Service Crash}{61}{subsection.8.7.1}%
+\contentsline {subsection}{\numberline {8.7.2}Socket Linger Issue}{61}{subsection.8.7.2}%
+\contentsline {subsection}{\numberline {8.7.3}Message Ordering}{61}{subsection.8.7.3}%
+\contentsline {section}{\numberline {8.8}Design Rationale}{61}{section.8.8}%
+\contentsline {subsection}{\numberline {8.8.1}Why Not ROS?}{61}{subsection.8.8.1}%
+\contentsline {subsection}{\numberline {8.8.2}Why TCP Not IPC?}{62}{subsection.8.8.2}%
+\contentsline {section}{\numberline {8.9}Chapter Summary}{62}{section.8.9}%
+\contentsline {chapter}{\numberline {9}Service Orchestration}{63}{chapter.9}%
+\contentsline {section}{\numberline {9.1}Architectural Role}{63}{section.9.1}%
+\contentsline {section}{\numberline {9.2}Phase State Machine}{63}{section.9.2}%
+\contentsline {subsection}{\numberline {9.2.1}State Transition Table}{63}{subsection.9.2.1}%
+\contentsline {subsection}{\numberline {9.2.2}Transition Logic}{65}{subsection.9.2.2}%
+\contentsline {section}{\numberline {9.3}Phase Entry Actions}{65}{section.9.3}%
+\contentsline {subsection}{\numberline {9.3.1}Entering LISTENING}{65}{subsection.9.3.1}%
+\contentsline {subsection}{\numberline {9.3.2}Entering THINKING}{66}{subsection.9.3.2}%
+\contentsline {subsection}{\numberline {9.3.3}Entering SPEAKING}{66}{subsection.9.3.3}%
+\contentsline {section}{\numberline {9.4}LED State Protocol}{66}{section.9.4}%
+\contentsline {section}{\numberline {9.5}Auto-Trigger Mechanism}{67}{section.9.5}%
+\contentsline {section}{\numberline {9.6}Systemd Integration}{67}{section.9.6}%
+\contentsline {subsection}{\numberline {9.6.1}Service Unit File}{67}{subsection.9.6.1}%
+\contentsline {subsection}{\numberline {9.6.2}Boot Order}{68}{subsection.9.6.2}%
+\contentsline {section}{\numberline {9.7}Failure Handling}{68}{section.9.7}%
+\contentsline {subsection}{\numberline {9.7.1}Service Crashes}{68}{subsection.9.7.1}%
+\contentsline {subsection}{\numberline {9.7.2}ZeroMQ Socket Recovery}{68}{subsection.9.7.2}%
+\contentsline {subsection}{\numberline {9.7.3}Zombie Socket Risk}{68}{subsection.9.7.3}%
+\contentsline {subsection}{\numberline {9.7.4}Hardware Watchdog}{69}{subsection.9.7.4}%
+\contentsline {section}{\numberline {9.8}Resource Consumption}{69}{section.9.8}%
+\contentsline {section}{\numberline {9.9}Summary}{69}{section.9.9}%
+\contentsline {chapter}{\numberline {10}Testing and Verification}{71}{chapter.10}%
+\contentsline {section}{\numberline {10.1}Testing Philosophy}{71}{section.10.1}%
+\contentsline {section}{\numberline {10.2}Test Infrastructure}{71}{section.10.2}%
+\contentsline {subsection}{\numberline {10.2.1}Test File Organisation}{71}{subsection.10.2.1}%
+\contentsline {subsection}{\numberline {10.2.2}Test Runner Configuration}{72}{subsection.10.2.2}%
+\contentsline {section}{\numberline {10.3}Unit Testing}{72}{section.10.3}%
+\contentsline {subsection}{\numberline {10.3.1}IPC Contract Verification}{72}{subsection.10.3.1}%
+\contentsline {subsection}{\numberline {10.3.2}Mock Detector Pattern}{73}{subsection.10.3.2}%
+\contentsline {subsection}{\numberline {10.3.3}Configuration Loader Tests}{73}{subsection.10.3.3}%
+\contentsline {section}{\numberline {10.4}Integration Testing}{73}{section.10.4}%
+\contentsline {subsection}{\numberline {10.4.1}Orchestrator Flow Test}{73}{subsection.10.4.1}%
+\contentsline {subsection}{\numberline {10.4.2}IPC Roundtrip Testing}{74}{subsection.10.4.2}%
+\contentsline {section}{\numberline {10.5}End-to-End Testing}{74}{section.10.5}%
+\contentsline {subsection}{\numberline {10.5.1}Wake-to-STT Pipeline Test}{74}{subsection.10.5.1}%
+\contentsline {subsection}{\numberline {10.5.2}Test Scenario: Audio Injection}{75}{subsection.10.5.2}%
+\contentsline {section}{\numberline {10.6}Quality Gates}{75}{section.10.6}%
+\contentsline {subsection}{\numberline {10.6.1}Static Analysis}{75}{subsection.10.6.1}%
+\contentsline {subsection}{\numberline {10.6.2}Type Safety for IPC}{76}{subsection.10.6.2}%
+\contentsline {section}{\numberline {10.7}Hardware-in-the-Loop Testing}{76}{section.10.7}%
+\contentsline {section}{\numberline {10.8}Continuous Integration Considerations}{76}{section.10.8}%
+\contentsline {section}{\numberline {10.9}Summary}{77}{section.10.9}%
+\contentsline {chapter}{\numberline {11}Deployment and Operations}{79}{chapter.11}%
+\contentsline {section}{\numberline {11.1}Virtual Environment Strategy}{79}{section.11.1}%
+\contentsline {subsection}{\numberline {11.1.1}The Dependency Isolation Requirement}{79}{subsection.11.1.1}%
+\contentsline {subsection}{\numberline {11.1.2}Environment Layout}{79}{subsection.11.1.2}%
+\contentsline {subsection}{\numberline {11.1.3}Environment Setup Script}{80}{subsection.11.1.3}%
+\contentsline {subsection}{\numberline {11.1.4}Startup Latency}{80}{subsection.11.1.4}%
+\contentsline {section}{\numberline {11.2}Systemd Service Configuration}{80}{section.11.2}%
+\contentsline {subsection}{\numberline {11.2.1}Service Inventory}{80}{subsection.11.2.1}%
+\contentsline {subsection}{\numberline {11.2.2}Service Unit Template}{80}{subsection.11.2.2}%
+\contentsline {subsection}{\numberline {11.2.3}Key Configuration Patterns}{81}{subsection.11.2.3}%
+\contentsline {section}{\numberline {11.3}Hardware Assembly}{82}{section.11.3}%
+\contentsline {subsection}{\numberline {11.3.1}Power Distribution}{82}{subsection.11.3.1}%
+\contentsline {subsection}{\numberline {11.3.2}UART Wiring}{82}{subsection.11.3.2}%
+\contentsline {subsection}{\numberline {11.3.3}Thermal Management}{82}{subsection.11.3.3}%
+\contentsline {section}{\numberline {11.4}Software Deployment Procedure}{82}{section.11.4}%
+\contentsline {subsection}{\numberline {11.4.1}Initial Setup}{82}{subsection.11.4.1}%
+\contentsline {subsection}{\numberline {11.4.2}Service Startup Order}{83}{subsection.11.4.2}%
+\contentsline {section}{\numberline {11.5}Operational Flow (Illustrative)}{83}{section.11.5}%
+\contentsline {subsection}{\numberline {11.5.1}End-to-End Scenario: ``Find the Bottle''}{83}{subsection.11.5.1}%
+\contentsline {subsubsection}{Phase 1: Trigger}{84}{subsection.11.5.1}%
+\contentsline {subsubsection}{Phase 2: Command Capture}{84}{Item.98}%
+\contentsline {subsubsection}{Phase 3: Cognition}{84}{Item.104}%
+\contentsline {subsubsection}{Phase 4: Action}{84}{Item.107}%
+\contentsline {section}{\numberline {11.6}Monitoring and Diagnostics}{85}{section.11.6}%
+\contentsline {subsection}{\numberline {11.6.1}Log File Locations}{85}{subsection.11.6.1}%
+\contentsline {subsection}{\numberline {11.6.2}Service Status Commands}{85}{subsection.11.6.2}%
+\contentsline {subsection}{\numberline {11.6.3}Health Indicators}{85}{subsection.11.6.3}%
+\contentsline {section}{\numberline {11.7}Summary}{85}{section.11.7}%
+\contentsline {chapter}{\numberline {12}Limitations and Future Work}{87}{chapter.12}%
+\contentsline {section}{\numberline {12.1}Current Limitations}{87}{section.12.1}%
+\contentsline {subsection}{\numberline {12.1.1}Computational Constraints}{87}{subsection.12.1.1}%
+\contentsline {subsection}{\numberline {12.1.2}Audio Pipeline Limitations}{87}{subsection.12.1.2}%
+\contentsline {subsection}{\numberline {12.1.3}Network Dependencies}{88}{subsection.12.1.3}%
+\contentsline {subsection}{\numberline {12.1.4}Thermal Constraints}{88}{subsection.12.1.4}%
+\contentsline {subsection}{\numberline {12.1.5}Memory Pressure}{88}{subsection.12.1.5}%
+\contentsline {subsection}{\numberline {12.1.6}Sensor Limitations}{88}{subsection.12.1.6}%
+\contentsline {section}{\numberline {12.2}Known Failure Modes}{89}{section.12.2}%
+\contentsline {subsection}{\numberline {12.2.1}Recoverable Failures}{89}{subsection.12.2.1}%
+\contentsline {subsection}{\numberline {12.2.2}Non-Recoverable Failures}{89}{subsection.12.2.2}%
+\contentsline {section}{\numberline {12.3}Extending the System}{89}{section.12.3}%
+\contentsline {subsection}{\numberline {12.3.1}Adding a New Skill}{89}{subsection.12.3.1}%
+\contentsline {subsection}{\numberline {12.3.2}Adding New Hardware}{90}{subsection.12.3.2}%
+\contentsline {section}{\numberline {12.4}Hardware Upgrade Path}{90}{section.12.4}%
+\contentsline {subsection}{\numberline {12.4.1}Near-Term Upgrades}{90}{subsection.12.4.1}%
+\contentsline {subsection}{\numberline {12.4.2}Google Coral Integration}{90}{subsection.12.4.2}%
+\contentsline {section}{\numberline {12.5}Software Roadmap}{91}{section.12.5}%
+\contentsline {subsection}{\numberline {12.5.1}Short-Term (3--6 Months)}{91}{subsection.12.5.1}%
+\contentsline {subsection}{\numberline {12.5.2}Medium-Term (6--12 Months)}{91}{subsection.12.5.2}%
+\contentsline {subsection}{\numberline {12.5.3}Long-Term Vision}{91}{subsection.12.5.3}%
+\contentsline {section}{\numberline {12.6}Lessons Learned}{91}{section.12.6}%
+\contentsline {subsection}{\numberline {12.6.1}What Worked}{91}{subsection.12.6.1}%
+\contentsline {subsection}{\numberline {12.6.2}What Could Improve}{92}{subsection.12.6.2}%
+\contentsline {section}{\numberline {12.7}Conclusion}{92}{section.12.7}%
+\contentsline {chapter}{Configuration Reference}{93}{appendix*.7}%
+\contentsline {section}{\numberline {.1}system.yaml Schema}{93}{section.Alph0.1}%
+\contentsline {chapter}{Pin Reference Tables}{95}{appendix*.8}%
+\contentsline {section}{\numberline {.2}ESP32 GPIO Map}{95}{section.Alph0.2}%
+\contentsline {section}{\numberline {.3}Raspberry Pi GPIO Map}{95}{section.Alph0.3}%
+\contentsline {chapter}{References}{97}{appendix*.9}%

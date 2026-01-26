@@ -1,0 +1,17 @@
+\chapter{Scalability \& Hardware Migration}
+
+\section{Downgrading (Pi Zero 2W)}
+\begin{itemize}
+    \item \textbf{RAM}: 512MB limit makes the current Multi-Process/Multi-Venv approach impossible.
+    \item \textbf{Fix}: Monolithic Single-Process C++ application required.
+\end{itemize}
+
+\section{Upgrading (NVIDIA Jetson Orin)}
+\begin{itemize}
+    \item \textbf{Vision}: Move ONNX Runtime to CUDA (GPU). Expect 30 FPS+ on YOLO.
+    \item \textbf{LLM}: Run Llama-3-8B locally (4-bit quantized). Latency drops from 1s (Cloud) to ~200ms (Local GPU).
+\end{itemize}
+
+\section{Final Architecture Verdict}
+The current architecture is **perfectly sized** for the Raspberry Pi 4 (4GB/8GB) tier. It saturates the CPU cores (Vision + Voice) and utilizes the RAM (Isolation) effectively without waste.
+It is an example of \textbf{Hardware-Aware Software Engineering}.

@@ -1,0 +1,352 @@
+\chapter{Deployment and Operations}
+\label{ch:deployment}
+
+This chapter covers the complete deployment process from bare hardware to operational system, including virtual environment strategy, systemd service configuration, and end-to-end operational flow verification.
+
+%----------------------------------------------------------------------
+\section{Virtual Environment Strategy}
+\label{sec:venv-strategy}
+
+\subsection{The Dependency Isolation Requirement}
+
+On constrained embedded hardware, dependency conflicts are not merely inconvenient---they render the system undeployable. The project requires:
+
+\begin{itemize}
+    \item \texttt{stte} (STT): numpy version constraints incompatible with vision stack
+    \item \texttt{visn} (Vision): numpy version constraints incompatible with STT stack
+\end{itemize}
+
+Attempting to install these in a single environment produces \texttt{ResolutionImpossible}. The multi-venv strategy is not architectural preference---it is a hard requirement.
+
+\subsection{Environment Layout}
+
+All virtual environments reside in \texttt{/home/dev/smart\_car/.venvs/}:
+
+\begin{table}[htbp]
+\centering
+\caption{Virtual environment specifications (measured)}
+\label{tab:venv-specs}
+\begin{tabular}{llcl}
+\toprule
+\textbf{Env} & \textbf{Primary Package} & \textbf{Disk Size} & \textbf{Service} \\
+\midrule
+\texttt{stte} & faster-whisper, ctranslate2 & 869 MB & voice-pipeline \\
+\texttt{ttse} & piper-tts, sounddevice & 256 MB & tts \\
+\texttt{llme} & llama-cpp-python & 269 MB & llm \\
+\texttt{visn-py313} & onnxruntime, opencv & 282 MB & vision, display, led-ring \\
+\texttt{visn} & onnxruntime, opencv & 586 MB & (legacy) \\
+\texttt{dise} & pygame, neopixel & 74 MB & (legacy) \\
+\texttt{core} & zmq, pyyaml & 43 MB & (legacy) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Total disk footprint: $\sim$2.4~GB for all environments (measured).
+
+done
+\subsection{Environment Setup Script}
+
+The repository includes a legacy \texttt{setup\_envs.sh} script that creates \texttt{stte}, \texttt{ttse}, \texttt{llme}, and \texttt{visn} environments in the project root without installing requirements. The deployed system uses \texttt{/home/dev/smart\_car/.venvs/} and includes additional environments (\texttt{core}, \texttt{dise}, \texttt{visn-py313}).
+
+\subsection{Startup Latency}
+
+Virtual environment activation adds $\sim$200~ms to service start time due to \texttt{sys.path} manipulation. This is negligible compared to Python interpreter initialisation ($\sim$1.5~s) and model loading ($\sim$3--5~s for AI services).
+
+%----------------------------------------------------------------------
+\section{Systemd Service Configuration}
+\label{sec:systemd-config}
+
+\subsection{Service Inventory}
+
+Eight systemd units manage the runtime:
+
+\begin{table}[htbp]
+\centering
+\caption{Systemd service files}
+\label{tab:systemd-services}
+\begin{tabular}{llc}
+\toprule
+\textbf{Service} & \textbf{Virtual Env} & \textbf{User} \\
+\midrule
+orchestrator.service & stte & dev \\
+voice-pipeline.service & stte & dev \\
+llm.service & llme & dev \\
+tts.service & ttse & dev \\
+vision.service & visn-py313 & dev \\
+uart.service & stte & dev \\
+display.service & visn-py313 & dev \\
+led-ring.service & visn-py313 & root \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Note: \texttt{led-ring.service} runs as root for GPIO access via \texttt{/dev/gpiomem}.
+
+\subsection{Service Unit Template}
+
+\begin{lstlisting}[language=bash, caption={voice-pipeline.service (representative)}]
+[Unit]
+Description=Voice Service (Wakeword + STT)
+After=network.target sound.target
+Conflicts=wakeword.service stt.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/smart_car
+Environment=PYTHONPATH=/home/dev/smart_car
+Environment=PYTHONUNBUFFERED=1
+Environment=PROJECT_ROOT=/home/dev/smart_car
+EnvironmentFile=/home/dev/smart_car/.env
+
+# Kill any process holding the mic before starting
+ExecStartPre=-/usr/bin/fuser -k /dev/snd/pcmC3D0c
+
+ExecStart=/home/dev/smart_car/.venvs/stte/bin/python \
+          -m src.audio.voice_service --config config/system.yaml
+
+Restart=always
+RestartSec=3
+TimeoutStartSec=60
+User=dev
+Group=dev
+StandardOutput=append:/home/dev/smart_car/logs/voice_service.log
+StandardError=append:/home/dev/smart_car/logs/voice_service.error.log
+
+# Resource limits for Raspberry Pi
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target
+\end{lstlisting}
+
+\subsection{Key Configuration Patterns}
+
+\begin{description}
+    \item[EnvironmentFile] Loads secrets (API keys) from \texttt{.env}
+    \item[ExecStartPre] Releases audio device locks before voice service starts
+    \item[Restart=always] Ensures automatic recovery from crashes
+    \item[RestartSec=3] Prevents restart storms during persistent failures
+    \item[MemoryMax/CPUQuota] Resource limits prevent runaway processes
+\end{description}
+
+%----------------------------------------------------------------------
+\section{Hardware Assembly}
+\label{sec:assembly}
+
+\subsection{Power Distribution}
+
+\begin{enumerate}
+    \item Connect Li-Ion battery positive to L298N 12V input
+    \item Connect Li-Ion battery negative to L298N GND
+    \item Bridge L298N GND to ESP32 GND and Raspberry Pi GND (common ground)
+    \item Power ESP32 via 5V/VIN pin or USB
+    \item Power Pi 4 via official USB-C supply (5V 3A)
+\end{enumerate}
+
+\textbf{Critical}: Common ground between all components is mandatory for UART signal integrity.
+
+\subsection{UART Wiring}
+
+\begin{table}[htbp]
+\centering
+\caption{UART connections}
+\label{tab:uart-wiring}
+\begin{tabular}{lll}
+\toprule
+\textbf{Pi GPIO} & \textbf{Direction} & \textbf{ESP32 GPIO} \\
+\midrule
+GPIO 14 (TX) & $\rightarrow$ & GPIO 16 (RX) \\
+GPIO 15 (RX) & $\leftarrow$ & GPIO 17 (TX) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thermal Management}
+
+\begin{enumerate}
+    \item Apply thermal paste to Pi 4 CPU (BCM2711)
+    \item Mount aluminium heatsink case
+    \item Connect dual fans to Pi 5V and GND GPIO
+    \item Verify: \texttt{stress -c 4} should maintain temperature $<$60°C
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Software Deployment Procedure}
+\label{sec:deployment-procedure}
+
+\subsection{Initial Setup}
+
+\begin{lstlisting}[language=bash, caption={Deployment commands}]
+# 1. Clone repository
+git clone https://github.com/user/smart_car.git
+cd smart_car
+
+done
+# 2. Create virtual environments (deployment-specific layout)
+./setup_envs.sh
+
+# 3. Install per-environment dependencies (if applicable)
+# pip install -r requirements-<env>.txt
+
+# 4. Fetch AI models
+./scripts/fetch_whisper_fast_model.sh
+./scripts/fetch_piper_voice.sh
+./scripts/fetch_llm_model.sh
+
+# 5. Flash ESP32 firmware
+arduino-cli compile --fqbn esp32:esp32:esp32 src/uart/esp-code.ino
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 src/uart/esp-code.ino
+
+# 6. Install systemd services
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 7. Enable and start services
+sudo systemctl enable orchestrator voice-pipeline llm tts vision uart display led-ring
+sudo systemctl start orchestrator
+\end{lstlisting}
+
+\subsection{Service Startup Order}
+
+Services start in dependency order:
+
+\begin{verbatim}
+network.target ────────────────────────────────────────> [Ready]
+       │
+       ├──> orchestrator (binds ZMQ 6010/6011) ────────> [Ready]
+       │
+       ├──> voice-pipeline (connects 6010/6011) ──────> [Ready]
+       ├──> vision (connects 6011) ───────────────────> [Ready]
+       ├──> llm (connects 6010/6011) ─────────────────> [Ready]
+       ├──> tts (connects 6010/6011) ─────────────────> [Ready]
+       ├──> uart (connects 6011) ─────────────────────> [Ready]
+       ├──> display (connects 6010) ──────────────────> [Ready]
+       └──> led-ring (connects 6010) ─────────────────> [Ready]
+\end{verbatim}
+
+%----------------------------------------------------------------------
+\section{Operational Flow (Illustrative)}
+\label{sec:operational-flow}
+
+\subsection{End-to-End Scenario: ``Find the Bottle''}
+
+This scenario illustrates the intended processing chain:
+
+\subsubsection{Phase 1: Trigger}
+
+\begin{enumerate}
+    \item User says: ``Hey Veera''
+    \item Porcupine detects wakeword
+    \item Voice pipeline publishes \texttt{TOPIC\_WW\_DETECTED}
+    \item Orchestrator transitions: IDLE $\rightarrow$ LISTENING
+    \item LED ring: Cyan breathing $\rightarrow$ Green flash $\rightarrow$ Blue sweep
+\end{enumerate}
+
+\subsubsection{Phase 2: Command Capture}
+
+\begin{enumerate}
+    \item User says: ``Find the bottle''
+    \item VAD detects speech end (silence window)
+    \item Faster-Whisper transcribes audio
+    \item Voice pipeline publishes \texttt{TOPIC\_STT}: \texttt{\{"text": "Find the bottle"\}}
+    \item Orchestrator transitions: LISTENING $\rightarrow$ THINKING
+    \item LED ring: Blue sweep $\rightarrow$ Pink pulse
+\end{enumerate}
+
+\subsubsection{Phase 3: Cognition}
+
+\begin{enumerate}
+    \item Orchestrator publishes \texttt{TOPIC\_LLM\_REQ} with:
+    \begin{itemize}
+        \item User text: ``Find the bottle''
+        \item Vision context: \texttt{\{"label": "bottle", "confidence": 0.8, "bbox": [...]\}}
+        \item Navigation state: ``stopped''
+    \end{itemize}
+    \item LLM generates response:
+    \begin{lstlisting}[language=json]
+{"speak": "I see it, approaching.", "direction": "forward", "track": "bottle"}
+    \end{lstlisting}
+    \item LLM publishes \texttt{TOPIC\_LLM\_RESP}
+\end{enumerate}
+
+\subsubsection{Phase 4: Action}
+
+\begin{enumerate}
+    \item Orchestrator parses LLM response
+    \item Publishes \texttt{TOPIC\_NAV}: \texttt{\{"direction": "forward"\}}
+    \item Publishes \texttt{TOPIC\_TTS}: \texttt{\{"text": "I see it, approaching."\}}
+    \item UART bridge sends a \texttt{FORWARD} command to ESP32
+    \item TTS generates and plays audio
+    \item Orchestrator transitions: THINKING $\rightarrow$ SPEAKING $\rightarrow$ IDLE
+    \item LED ring: Pink pulse $\rightarrow$ Orange pulse $\rightarrow$ Green chase $\rightarrow$ Cyan breathing
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Monitoring and Diagnostics}
+\label{sec:monitoring}
+
+\subsection{Log File Locations}
+
+\begin{lstlisting}[language=bash]
+/home/dev/smart_car/logs/
+├── orchestrator.log
+├── voice_service.log
+├── voice_service.error.log
+├── llm.log
+├── tts.log
+├── vision.log
+├── uart.log
+├── display.log
+└── led_ring.log
+\end{lstlisting}
+
+\subsection{Service Status Commands}
+
+\begin{lstlisting}[language=bash, caption={Diagnostic commands}]
+# Check all service status
+systemctl status orchestrator voice-pipeline llm tts vision uart display led-ring
+
+# View recent logs
+journalctl -u voice-pipeline -n 50 --no-pager
+
+# Monitor real-time events
+tail -f /home/dev/smart_car/logs/*.log
+
+# Check resource usage
+ps aux | grep -E 'orchestrator|voice|vision|llm|tts'
+\end{lstlisting}
+
+\subsection{Health Indicators}
+
+\begin{table}[htbp]
+\centering
+\caption{System health verification}
+\label{tab:health-checks}
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{Check} & \textbf{Expected Result} \\
+\midrule
+LED ring shows cyan breathing & Orchestrator running, system idle \\
+\texttt{ss -tlnp | grep 6010} & Orchestrator bound to ZMQ port \\
+\texttt{dmesg | grep -i usb} & Audio device detected \\
+\texttt{cat /sys/class/thermal/thermal\_zone0/temp} & $<$70000 (70°C) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Summary}
+\label{sec:deployment-summary}
+
+Deployment requires careful attention to:
+
+\begin{enumerate}
+    \item \textbf{Environment Isolation}: Multiple virtual environments resolve conflicting numpy requirements
+    \item \textbf{Service Configuration}: Systemd units with resource limits and automatic restart
+    \item \textbf{Hardware Assembly}: Common ground and proper cooling are critical
+    \item \textbf{Startup Order}: Orchestrator must bind ZMQ buses before agents connect
+    \item \textbf{Verification}: End-to-end scenario testing validates complete chain
+\end{enumerate}
+
+The deployment procedure, while multi-step, produces a self-healing system where crashed services automatically restart and reconnect to the ZeroMQ buses.

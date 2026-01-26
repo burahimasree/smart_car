@@ -1,0 +1,26 @@
+\chapter{Audio Pipeline Under Real Load}
+
+\section{Resource Consumption}
+Using \texttt{ps}, we measured the Resident Set Size (RSS) of the active Voice Pipeline.
+
+\begin{itemize}
+    \item \textbf{Process}: \texttt{python3 -m src.audio.main}
+    \item \textbf{Memory}: \textbf{239.3 MB} (Active)
+    \item \textbf{CPU Idle}: 0.2\% (thanks to Porcupine offload)
+    \item \textbf{CPU Triggered}: Peaks to 180\% (2 cores) during Whisper transcription.
+\end{itemize}
+
+\section{Latency Budget}
+\begin{enumerate}
+    \item \textbf{Wake Word}: $<$ 50ms (Porcupine runs on-device).
+    \item \textbf{Silence Detection}: 900ms (Configured buffer).
+    \item \textbf{Transcription}: ~800ms (for "Hello Veera") on Pi 4 @ 2.0GHz.
+    \item \textbf{Network}: The primary bottleneck.
+\end{enumerate}
+
+\section{Network Blocking Reality}
+Our `systemd-analyze` probe showed `NetworkManager-wait-online` taking **8.150 seconds**.
+Because the LLM is Cloud-based (Gemini), the Voice pipeline is effectively dead weight until this service completes.
+\begin{quote}
+    \textbf{Metric}: The "Time to First Chat" is dominated by the Wi-Fi handshake (8s), not the AI model load (2s).
+\end{quote}

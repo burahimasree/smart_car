@@ -1,0 +1,18 @@
+\chapter{Extending the System}
+
+\section{Adding a New Skill}
+To add a "Weather" skill:
+\begin{enumerate}
+    \item \textbf{Create Service}: Write `src/weather_service.py` that queries an API.
+    \item \textbf{Interface}: Subscribe to `llm.response` or a new command topic.
+    \item \textbf{Prompt}: Update `ConversationMemory` system prompt to include "check weather" capability.
+    \item \textbf{Register}: Add systemd unit.
+\end{enumerate}
+
+\section{Adding Hardware}
+To add a Lidar:
+\begin{enumerate}
+    \item \textbf{Driver}: Write a C/Python driver reading the sensor.
+    \item \textbf{Publisher}: Publish point cloud to `lidar.scan` (ZMQ).
+    \item \textbf{Fusion}: Update `Orchestrator` to fuse Lidar range with Vision bbox.
+\end{enumerate}
