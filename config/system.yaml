@@ -114,7 +114,7 @@ tts:
     wav_path: run/tts_out.wav
 
 llm:
-  engine: gemini
+  engine: azure_openai
   # Cloud Gemini model configuration
   gemini_model: gemini-2.5-flash
   # API key is read from environment by default

@@ -50,7 +50,7 @@ class AzureOpenAIRunner:
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-03-01-preview").strip()
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview").strip()
 
         if not api_key:
             raise RuntimeError("AZURE_OPENAI_API_KEY not configured")
@@ -119,7 +119,7 @@ class AzureOpenAIRunner:
         if not text:
             return {}, ""
         system_prompt = (
-            "You are VEERA, a smart car assistant. "
+            "You are ROBO, a smart assistant for a robotic car. "
             "Reply with JSON only: {\"speak\": string, \"direction\": "
             "'forward'|'backward'|'left'|'right'|'stop', \"track\": string}. "
             "If no movement, use direction 'stop' and empty track."
