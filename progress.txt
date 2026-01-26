@@ -1,0 +1,48 @@
+Progress Log — Azure OpenAI integration (testing)
+Date: 2026-01-26
+
+Summary
+- Goal: Validate Azure OpenAI (gpt-5-mini) for smart car LLM tests using .env.
+- Environments: llme venv (.venvs/llme).
+
+Actions Performed
+1) Installed OpenAI SDK in llme venv.
+   Command: source .venvs/llme/bin/activate && pip install openai
+2) Updated .env with Azure OpenAI config (no hardcoded keys in code):
+   - AZURE_OPENAI_API_KEY
+   - AZURE_OPENAI_ENDPOINT=https://1602--mkvc2jiy-eastus2.cognitiveservices.azure.com/
+   - AZURE_OPENAI_DEPLOYMENT=gpt-5-mini
+   - AZURE_OPENAI_API_VERSION=2025-04-01-preview
+3) Created/updated Azure OpenAI test scripts:
+   - third_party/azure-openai/testing.py (Responses API)
+   - third_party/azure-openai/testing_2.py (Responses API)
+   - third_party/azure-openai/testing_chat.py (Chat Completions API)
+4) Added python-dotenv to load .env in test scripts.
+   Command: source .venvs/llme/bin/activate && pip install python-dotenv
+5) Fixed config usage: test scripts now read only from .env (no config.json dependency).
+6) Verified deployment details from Foundry:
+   - Deployment name: gpt-5-mini
+   - Endpoint base: https://1602--mkvc2jiy-eastus2.cognitiveservices.azure.com/
+   - Responses endpoint (target URI): /openai/responses?api-version=2025-04-01-preview
+
+Observations
+- Earlier failures included 401 invalid key/endpoint and missing protocol; resolved by using .env and correct endpoint.
+- Responses API works in testing.py with 2025-04-01-preview and gpt-5-mini.
+- testing_2.py returned “Empty response from Azure.” on last run; needs re-test.
+
+Current Test Files
+- third_party/azure-openai/testing.py: Responses API, one-shot test.
+- third_party/azure-openai/testing_2.py: Responses API, one-shot test.
+- third_party/azure-openai/testing_chat.py: Chat Completions API with VEERA prompt.
+
+Important Configuration (expected in .env)
+- AZURE_OPENAI_API_KEY=<set by user>
+- AZURE_OPENAI_ENDPOINT=https://1602--mkvc2jiy-eastus2.cognitiveservices.azure.com/
+- AZURE_OPENAI_DEPLOYMENT=gpt-5-mini
+- AZURE_OPENAI_API_VERSION=2025-04-01-preview
+
+Wakeword
+- User update: wakeword is "hey robo" (reflected in testing_chat.py system prompt).
+
+Next Steps
+- Re-run testing_2.py and testing_chat.py after confirming .env values.
