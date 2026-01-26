@@ -150,9 +150,27 @@ class AzureOpenAIRunner:
 
         content = ""
         try:
-            content = (resp.choices[0].message.content or "").strip()
+            msg = resp.choices[0].message
+            raw_content = msg.content
+            if isinstance(raw_content, str):
+                content = raw_content.strip()
+            elif isinstance(raw_content, list):
+                parts: list[str] = []
+                for item in raw_content:
+                    if isinstance(item, dict):
+                        text_part = item.get("text") or ""
+                        if text_part:
+                            parts.append(str(text_part))
+                    elif isinstance(item, str):
+                        parts.append(item)
+                content = "".join(parts).strip()
+            elif raw_content is not None:
+                content = str(raw_content).strip()
         except Exception:
             content = ""
+
+        if not content:
+            self.logger.warning("Azure OpenAI returned empty content")
 
         parsed = self._extract_json(content)
         return parsed, content
