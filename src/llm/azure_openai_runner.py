@@ -124,23 +124,38 @@ class AzureOpenAIRunner:
             "'forward'|'backward'|'left'|'right'|'stop', \"track\": string}. "
             "If no movement, use direction 'stop' and empty track."
         )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text[:300]},
+        ]
+
         try:
-            resp = self.client.responses.create(
+            resp = self.client.chat.completions.create(
                 model=self.deployment,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text[:300]},
-                ],
-                max_output_tokens=160,
-                temperature=1,
+                messages=messages,
+                max_completion_tokens=160,
+                response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001
-            self.logger.error("Azure OpenAI request failed: %s", exc)
-            raise
+            self.logger.warning("Azure OpenAI JSON request failed, retrying without response_format: %s", exc)
+            try:
+                resp = self.client.chat.completions.create(
+                    model=self.deployment,
+                    messages=messages,
+                    max_completion_tokens=160,
+                )
+            except Exception as exc2:  # noqa: BLE001
+                self.logger.error("Azure OpenAI request failed: %s", exc2)
+                raise
 
-        raw_text = getattr(resp, "output_text", "") or ""
-        parsed = self._extract_json(raw_text)
-        return parsed, raw_text
+        content = ""
+        try:
+            content = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            content = ""
+
+        parsed = self._extract_json(content)
+        return parsed, content
 
     def run(self) -> None:
         self.logger.info("AzureOpenAIRunner listening on %s", TOPIC_LLM_REQ)
@@ -165,7 +180,7 @@ class AzureOpenAIRunner:
 
             try:
                 parsed, raw = self._call_azure(user_text)
-                ok = bool(parsed)
+                ok = bool(parsed) or bool(raw.strip())
             except Exception as exc:  # noqa: BLE001
                 ok = False
                 raw = f"AZURE_OPENAI_ERROR: {exc}"
