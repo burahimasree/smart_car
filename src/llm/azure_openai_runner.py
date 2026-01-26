@@ -180,6 +180,10 @@ class AzureOpenAIRunner:
             except Exception as exc:  # noqa: BLE001
                 self.logger.error("Azure OpenAI fallback request failed: %s", exc)
 
+        if not content:
+            content = "I'm here, but I didn't catch that. Please try again."
+            self.logger.warning("Azure OpenAI returned empty content after retries; using fallback response")
+
         parsed = self._extract_json(content)
         return parsed, content
 
@@ -203,6 +207,7 @@ class AzureOpenAIRunner:
             if not user_text:
                 self.logger.warning("Empty user text in llm.request; skipping")
                 continue
+            self.logger.info("LLM request received: %s", user_text[:160])
 
             try:
                 parsed, raw = self._call_azure(user_text)

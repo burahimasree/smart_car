@@ -14,15 +14,25 @@ implementation talked to the TFT.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import mmap
 import os
 import random
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import pygame
+import zmq
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.core.config_loader import load_config
+from src.core.ipc import TOPIC_DISPLAY_STATE, TOPIC_DISPLAY_TEXT, make_subscriber
 
 
 # Default to the SPI framebuffer + touchscreen; callers can override before import.
@@ -89,6 +99,18 @@ def _surface_to_rgb565(surface: pygame.Surface) -> np.ndarray:
     b = frame[:, :, 2]
     packed = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
     return packed.astype("<u2", copy=False)
+
+
+def _ellipsize_text(text: str, font: pygame.font.Font, max_width: int) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    if font.size(text)[0] <= max_width:
+        return text
+    ellipsis = "…"
+    while text and font.size(text + ellipsis)[0] > max_width:
+        text = text[:-1]
+    return text + ellipsis
 
 
 class FramebufferWriter:
@@ -352,6 +374,9 @@ def draw_face(
     swap_rb: bool = False,
     bg_color: tuple[int, int, int] = WHITE,
     timestamp: float | None = None,
+    overlay_text: str | None = None,
+    overlay_font: pygame.font.Font | None = None,
+    overlay_height_ratio: float = 0.18,
 ) -> None:
     width, height = surface.get_width(), surface.get_height()
     now = time.time() if timestamp is None else timestamp
@@ -522,6 +547,16 @@ def draw_face(
         override_color=blush_color,  # type: ignore[arg-type]
     )
 
+    if overlay_text and overlay_font:
+        bar_height = int(height * overlay_height_ratio)
+        bar_y = height - bar_height
+        pygame.draw.rect(surface, c((10, 10, 10)), (0, bar_y, width, bar_height))
+        text = _ellipsize_text(overlay_text, overlay_font, width - 16)
+        text_surface = overlay_font.render(text, True, c(WHITE))
+        text_rect = text_surface.get_rect()
+        text_rect.midleft = (8, bar_y + bar_height // 2)
+        surface.blit(text_surface, text_rect)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -598,6 +633,7 @@ def main() -> None:
         os.environ.pop("SDL_FBDEV", None)
 
     pygame.init()
+    pygame.font.init()
     try:
         pygame.mixer.quit()
     except Exception:
@@ -627,6 +663,32 @@ def main() -> None:
         print(f"Unknown state '{args.state}', falling back to BASE")
         requested = "BASE"
     current_state = requested
+
+    overlay_text = ""
+    overlay_text_ts = 0.0
+    overlay_font = pygame.font.Font(None, max(18, int(canvas.get_height() * 0.08)))
+
+    state_map = {
+        "idle": "BASE",
+        "listening": "LISTENING",
+        "wakeword_detected": "SURPRISED",
+        "thinking": "CURIOUS",
+        "tts_processing": "SPEAKING",
+        "speaking": "SPEAKING",
+        "error": "SAD",
+    }
+
+    sub = None
+    poller = None
+    try:
+        cfg = load_config(Path("config/system.yaml"))
+        sub = make_subscriber(cfg, topic=TOPIC_DISPLAY_STATE, channel="downstream")
+        sub.setsockopt(zmq.SUBSCRIBE, TOPIC_DISPLAY_TEXT)
+        sub.setsockopt(zmq.RCVTIMEO, 0)
+        poller = zmq.Poller()
+        poller.register(sub, zmq.POLLIN)
+    except Exception as exc:
+        print(f"Display IPC unavailable: {exc}")
 
     print("Face UI running. Press Ctrl+C or ESC to quit.")
     print(
@@ -673,6 +735,25 @@ def main() -> None:
                 ):
                     current_state = "BASE"
 
+            if poller and sub:
+                while True:
+                    events = dict(poller.poll(0))
+                    if sub not in events:
+                        break
+                    try:
+                        topic, data = sub.recv_multipart()
+                        payload = json.loads(data)
+                    except Exception:
+                        continue
+                    if topic == TOPIC_DISPLAY_STATE:
+                        requested_state = str(payload.get("state", "")).lower()
+                        mapped = state_map.get(requested_state)
+                        if mapped:
+                            current_state = mapped
+                    elif topic == TOPIC_DISPLAY_TEXT:
+                        overlay_text = str(payload.get("text", "")).strip()
+                        overlay_text_ts = now
+
             cfg = STATE_RULES.get(current_state, STATE_RULES["BASE"])
             if blink_enabled and cfg.get("eye_open", 1.0) > 0.05:  # type: ignore[operator]
                 if not blink_active and now >= next_blink:
@@ -689,6 +770,8 @@ def main() -> None:
                 swap_rb=args.swap_rb,
                 bg_color=bg_color,
                 timestamp=now,
+                overlay_text=overlay_text if now - overlay_text_ts < 8.0 else "",
+                overlay_font=overlay_font,
             )
 
             if fb_writer:
@@ -707,6 +790,11 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if sub:
+            try:
+                sub.close(0)
+            except Exception:
+                pass
         if fb_writer:
             fb_writer.close()
         pygame.quit()

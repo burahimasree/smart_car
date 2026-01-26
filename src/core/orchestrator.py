@@ -27,6 +27,7 @@ from src.core.ipc import (
     TOPIC_CMD_PAUSE_VISION,
     TOPIC_CMD_VISN_CAPTURE,
     TOPIC_DISPLAY_STATE,
+    TOPIC_DISPLAY_TEXT,
     TOPIC_ESP,
     TOPIC_HEALTH,
     TOPIC_LLM_REQ,
@@ -103,6 +104,12 @@ class Orchestrator:
         })
         logger.debug("LED: %s", state)
 
+    def _publish_display_text(self, text: str) -> None:
+        publish_json(self.cmd_pub, TOPIC_DISPLAY_TEXT, {
+            "text": text,
+            "timestamp": int(time.time()),
+        })
+
     @property
     def phase(self) -> Phase:
         return self._phase
@@ -125,8 +132,10 @@ class Orchestrator:
         self._last_interaction_ts = time.time()
         if from_wakeword:
             self._publish_led_state("wakeword_detected")
+            self._publish_display_text("Wakeword detected")
         else:
             self._publish_led_state("listening")
+            self._publish_display_text("Listening...")
         publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": True})
         publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_START, {"start": True})
 
@@ -136,14 +145,17 @@ class Orchestrator:
 
     def _enter_thinking(self, text: str, vision: Optional[Dict[str, Any]] = None) -> None:
         self._publish_led_state("thinking")
+        self._publish_display_text(f"Heard: {text[:120]}")
         payload: Dict[str, Any] = {"text": text}
         if vision:
             payload["vision"] = vision
         payload["direction"] = self._last_nav_direction
         publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
+        logger.info("LLM request text: %s", text[:120])
 
     def _enter_speaking(self, text: str, direction: Optional[str] = None) -> None:
         self._publish_led_state("tts_processing")
+        self._publish_display_text(f"Saying: {text[:120]}")
         if direction and direction != "stop":
             self._last_nav_direction = direction
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction})
@@ -151,6 +163,7 @@ class Orchestrator:
 
     def _enter_idle(self) -> None:
         self._publish_led_state("idle")
+        self._publish_display_text("Idle")
         publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": False})
 
     def _notify_stt_failure(self, reason: str) -> None:
@@ -185,6 +198,7 @@ class Orchestrator:
             return
         text = str(payload.get("text", "")).strip()
         confidence = float(payload.get("confidence", 0.0) or 0.0)
+        logger.info("STT payload: text='%s' conf=%.2f", text[:120], confidence)
         
         if not text:
             logger.warning("Empty transcription received")
@@ -239,6 +253,7 @@ class Orchestrator:
         body = payload.get("json") or {}
         speak = body.get("speak") or payload.get("text", "")
         direction = body.get("direction")
+        logger.info("LLM response speak: %s", (speak or "")[:120])
         
         if speak:
             if self._transition("llm_with_speech"):
