@@ -13,6 +13,7 @@ LED COLOR SCHEME (granular feedback):
 from __future__ import annotations
 
 import json
+import random
 import time
 from enum import Enum, auto
 from pathlib import Path
@@ -94,7 +95,7 @@ class Orchestrator:
         stt_cfg = self.config.get("stt", {}) or {}
         self.stt_timeout_s = float(stt_cfg.get("timeout_seconds", 30.0))
         self.stt_min_confidence = float(stt_cfg.get("min_confidence", 0.3))
-        self.error_recovery_s = 30.0
+        self.error_recovery_s = 2.0
 
     def _publish_led_state(self, state: str) -> None:
         publish_json(self.cmd_pub, TOPIC_DISPLAY_STATE, {
@@ -168,11 +169,27 @@ class Orchestrator:
 
     def _notify_stt_failure(self, reason: str) -> None:
         feedback_messages = {
-            "timeout": "I didn't hear anything. Please try again.",
-            "empty": "I couldn't understand that. Please speak clearly.",
-            "low_confidence": "I'm not sure what you said. Please try again.",
+            "timeout": [
+                "I didn't catch anything. Try again?",
+                "I lost you there. Say it once more.",
+                "I waited but heard nothing. Please try again.",
+            ],
+            "empty": [
+                "I couldn't make that out. Please speak clearly.",
+                "That came through empty. Try a bit louder.",
+                "I missed that. Please repeat.",
+            ],
+            "low_confidence": [
+                "I'm not sure I got that. Please repeat.",
+                "That was unclear. Say it again for me.",
+                "I didn't get enough confidence. Try again.",
+            ],
         }
-        message = feedback_messages.get(reason, "Something went wrong. Please try again.")
+        choices = feedback_messages.get(reason)
+        if choices:
+            message = random.choice(choices)
+        else:
+            message = "Something went wrong. Please try again."
         publish_json(self.cmd_pub, TOPIC_TTS, {"text": message, "notification": True})
         logger.info("STT failure feedback: %s", reason)
 
@@ -313,6 +330,7 @@ class Orchestrator:
         elif self._phase == Phase.ERROR and elapsed > self.error_recovery_s:
             logger.info("Error auto-recovery after %.1fs", self.error_recovery_s)
             self._transition("error_timeout")
+            self._publish_display_text("Recovered. Ready.")
             self._enter_idle()
 
     def _check_auto_trigger(self) -> None:
