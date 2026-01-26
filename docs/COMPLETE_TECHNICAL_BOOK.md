@@ -46,7 +46,7 @@ The Smart Car project is an **industrial-grade autonomous robotics platform** bu
 ## 1.2 Core Capabilities
 
 The robot can:
-- **Listen** for a custom wake word ("Hey Veera") using Porcupine
+- **Listen** for a custom wake word ("Hey Robo") using Porcupine
 - **Transcribe** speech using Faster-Whisper with int8 quantization
 - **Think** using Google Gemini API with conversation memory
 - **Speak** using Piper TTS
@@ -193,7 +193,7 @@ sequenceDiagram
     participant NAV as UART Bridge
     participant ESP as ESP32
     
-    WW->>O: ww.detected {"keyword": "hey veera"}
+    WW->>O: ww.detected {"keyword": "hey robo"}
     O->>O: Phase: IDLE → LISTENING
     WW->>O: stt.transcription {"text": "move forward"}
     O->>O: Phase: LISTENING → THINKING
@@ -342,7 +342,7 @@ wakeword:
   engine: porcupine
   access_key: ${ENV:PV_ACCESS_KEY}
   sensitivity: 0.75
-  model: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
+    model: ${PROJECT_ROOT}/models/wakeword/hey_robo.ppn
 ```
 
 ### Speech-to-Text

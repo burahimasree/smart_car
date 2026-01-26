@@ -53,23 +53,23 @@ SERVICE HIERARCHY:
 | Check | Result | Evidence |
 |-------|--------|----------|
 | Porcupine initialization | ✅ | Service started without errors |
-| Keyword detection | ✅ | "hey veera" detected with 0.99 confidence |
+| Keyword detection | ✅ | "hey robo" detected with 0.99 confidence |
 | IPC publish | ✅ | `TOPIC_WW_DETECTED` published to orchestrator |
-| Orchestrator receipt | ✅ | Log: `Wakeword: {'keyword': 'hey veera', 'variant': 'veera', 'confidence': 0.99, 'source': 'unified_pipeline'}` |
+| Orchestrator receipt | ✅ | Log: `Wakeword: {'keyword': 'hey robo', 'variant': 'robo', 'confidence': 0.99, 'source': 'unified_pipeline'}` |
 
 **Detection Log Examples** (from orchestrator.log):
 ```
-2026-01-15 16:40:08 | Wakeword: {'keyword': 'hey veera', 'variant': 'veera', 'confidence': 0.99}
-2026-01-15 15:57:24 | Wakeword: {'keyword': 'hey veera', 'variant': 'veera', 'confidence': 0.99}
-2026-01-15 07:03:03 | Wakeword: {'keyword': 'hey veera', 'variant': 'veera', 'confidence': 0.99}
-2026-01-15 00:20:40 | Wakeword: {'keyword': 'hey veera', 'variant': 'veera', 'confidence': 0.99}
+2026-01-15 16:40:08 | Wakeword: {'keyword': 'hey robo', 'variant': 'robo', 'confidence': 0.99}
+2026-01-15 15:57:24 | Wakeword: {'keyword': 'hey robo', 'variant': 'robo', 'confidence': 0.99}
+2026-01-15 07:03:03 | Wakeword: {'keyword': 'hey robo', 'variant': 'robo', 'confidence': 0.99}
+2026-01-15 00:20:40 | Wakeword: {'keyword': 'hey robo', 'variant': 'robo', 'confidence': 0.99}
 ```
 
 **Configuration**:
 - Engine: Porcupine (hardware-optimized for Raspberry Pi)
 - Sensitivity: 0.75
-- Model: `hey-veera_en_raspberry-pi_v3_0_0.ppn`
-- Fallback keywords: hey veera, veera, vira, hi veera, vera, viera
+- Model: `hey_robo.ppn`
+- Fallback keywords: hey robo
 
 ---
 
@@ -127,7 +127,7 @@ orchestrator:
 
 **System Prompt Analysis** (from `conversation_memory.py`):
 ```
-You are VEERA, an AI assistant controlling a physical robot car...
+You are ROBO, a smart assistant for a physical robot car...
 
 ## RESPONSE FORMAT (STRICT JSON):
 {

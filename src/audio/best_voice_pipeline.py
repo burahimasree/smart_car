@@ -240,7 +240,7 @@ class BestVoicePipeline:
     """Best practice voice pipeline with continuous wakeword detection.
     
     Key feature: Wakeword detection runs ALL THE TIME, even during STT.
-    This allows the user to say "hey veera" to interrupt/restart.
+    This allows the user to say "hey robo" to interrupt/restart.
     """
     
     def __init__(self, config: VoiceConfig, config_path: Optional[Path] = None):
@@ -528,7 +528,7 @@ class BestVoicePipeline:
             try:
                 payload = {
                     "timestamp": int(time.time()),
-                    "keyword": "hey veera",
+                    "keyword": "hey robo",
                     "confidence": 0.99,
                     "source": "best_voice_pipeline",
                 }
@@ -751,8 +751,8 @@ class BestVoicePipeline:
     
     def run(self) -> None:
         """Main event loop."""
-        print("[voice] Pipeline running. Say 'hey veera' to start...")
-        print("[voice] You can say 'hey veera' anytime to interrupt and restart!")
+        print("[voice] Pipeline running. Say 'hey robo' to start...")
+        print("[voice] You can say 'hey robo' anytime to interrupt and restart!")
         
         try:
             while not self._stop_event.is_set():

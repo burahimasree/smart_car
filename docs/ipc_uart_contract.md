@@ -1,7 +1,7 @@
 # IPC & UART Contract
 
 ## ZeroMQ topics
-- `ww.detected` → { "timestamp": int, "keyword": "veera", "variant": string, "confidence": float, "source": "porcupine" }
+- `ww.detected` → { "timestamp": int, "keyword": "robo", "variant": string, "confidence": float, "source": "porcupine" }
 - `stt.transcription` → { "timestamp": int, "text": string, "confidence": float (0-1), "language": "en", "durations_ms": {"capture": int, "whisper": int, "total": int} }
 - `llm.request` → { "text": string }
 - `llm.response` → { "timestamp": int, "text": string, "tokens": int, "latency_ms": int }
@@ -19,7 +19,7 @@ Upon receiving `ww.detected`, the orchestrator must:
 
 Example `ww.detected`:
 ```json
-{"timestamp": 1763600000, "keyword": "veera", "variant": "hey veera", "confidence": 0.87, "source": "porcupine"}
+{"timestamp": 1763600000, "keyword": "robo", "variant": "hey robo", "confidence": 0.87, "source": "porcupine"}
 ```
 
 ## UART protocol

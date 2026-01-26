@@ -32,7 +32,7 @@ SENSITIVITY = 0.7     # Wakeword sensitivity
 
 # Porcupine config
 ACCESS_KEY = os.environ.get("PV_ACCESS_KEY", "")
-MODEL_PATH = "/home/dev/smart_car/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn"
+MODEL_PATH = "/home/dev/smart_car/models/wakeword/hey_robo.ppn"
 
 print("=== WAKEWORD DETECTION TEST ===", flush=True)
 print(f"Duration: {DURATION}s", flush=True)
@@ -95,7 +95,7 @@ stream = pa.open(
 )
 
 print("", flush=True)
-print("🎤 Listening for 'HEY VEERA'...", flush=True)
+print("🎤 Listening for 'HEY ROBO'...", flush=True)
 print("   Say it multiple times to test detection!", flush=True)
 print("", flush=True)
 

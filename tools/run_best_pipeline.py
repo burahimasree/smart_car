@@ -43,7 +43,7 @@ if not pipeline.start():
     print("Failed to start pipeline!", flush=True)
     sys.exit(1)
 
-print("Pipeline started! Say HEY VEERA...", flush=True)
+print("Pipeline started! Say HEY ROBO...", flush=True)
 try:
     pipeline.run()
 finally:

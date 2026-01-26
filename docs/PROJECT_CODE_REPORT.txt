@@ -279,7 +279,7 @@ def run_vision_loop(config, camera_index=0):
                     7. WAKEWORD DETECTION (Porcupine)
 ================================================================================
 # File: src/wakeword/porcupine_runner.py
-# Purpose: Activate assistant with voice trigger "Hey Veera"
+# Purpose: Activate assistant with voice trigger "Hey Robo"
 
 import pvporcupine
 import pyaudio
@@ -290,7 +290,7 @@ def publish_detected(pub, score, source):
     """Publish wakeword detection event."""
     payload = {
         "timestamp": int(time.time()),
-        "keyword": "veera",
+        "keyword": "robo",
         "confidence": float(score),
         "source": source
     }

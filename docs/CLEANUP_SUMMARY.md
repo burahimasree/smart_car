@@ -94,7 +94,7 @@ This document records the ruthless engineering cleanup performed on the smart_ca
 │                                                                  │
 │  voice-pipeline.service  ←──── SINGLE MIC OWNER                 │
 │  └── unified_voice_pipeline.py                                  │
-│      ├── Porcupine wakeword ("hey veera")                       │
+│      ├── Porcupine wakeword ("hey robo")                        │
 │      └── Faster-Whisper STT                                     │
 │                                                                  │
 │  orchestrator.service  ←──── CENTRAL FSM (Phase enum)           │

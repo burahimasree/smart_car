@@ -40,7 +40,7 @@ from src.core.logging_setup import get_logger
 
 
 # Simple system prompt for TinyLlama
-SYSTEM_PROMPT = "You are VEERA, a friendly robot. Keep answers to 1-2 sentences."
+SYSTEM_PROMPT = "You are ROBO, a smart assistant for a robotic car. Keep answers to 1-2 sentences."
 
 
 @dataclass
@@ -199,7 +199,7 @@ class LocalLLMRunner:
         
         # Simple keyword matching for basic responses
         if any(w in user_lower for w in ["hello", "hi ", "hey "]):
-            speak = "Hello! I'm VEERA, your robot assistant. How can I help?"
+            speak = "Hello! I'm ROBO, your robot assistant. How can I help?"
         elif any(w in user_lower for w in ["how are you", "how're you"]):
             speak = "I'm doing great! Ready to help you."
         elif any(w in user_lower for w in ["forward", "go ahead", "move forward"]):
@@ -213,7 +213,7 @@ class LocalLLMRunner:
         elif any(w in user_lower for w in ["stop", "halt", "wait"]):
             return {"speak": "Stopping now!", "direction": "stop", "track": ""}
         elif any(w in user_lower for w in ["who are you", "your name", "what are you"]):
-            speak = "I'm VEERA, a smart car robot assistant!"
+            speak = "I'm ROBO, a smart car robot assistant!"
         elif any(w in user_lower for w in ["thank", "thanks"]):
             speak = "You're welcome!"
         elif any(w in user_lower for w in ["bye", "goodbye"]):
@@ -283,7 +283,7 @@ class LocalLLMRunner:
             publish_json(self.pub, TOPIC_LLM_RESP, resp_payload)
             
             speak = parsed.get("speak", "")[:60]
-            print(f"💬 VEERA: {speak}", flush=True)
+            print(f"💬 ROBO: {speak}", flush=True)
             self.logger.info("Published llm.response ok=%s", ok)
 
 

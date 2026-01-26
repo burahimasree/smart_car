@@ -25,7 +25,7 @@ def expected_keywords():
     primary = (
         ww.get("payload_keyword")
         or ww.get("primary_keyword")
-        or (keywords[0] if keywords else "veera")
+        or (keywords[0] if keywords else "robo")
     )
     variant = ww.get("payload_variant") or ww.get("variant_keyword") or primary
     return primary, variant

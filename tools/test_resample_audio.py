@@ -81,7 +81,7 @@ stream = pa.open(
 )
 
 print("", flush=True)
-print("🎤 Recording... SPEAK NOW! Say 'hey veera' multiple times!", flush=True)
+print("🎤 Recording... SPEAK NOW! Say 'hey robo' multiple times!", flush=True)
 print("", flush=True)
 
 all_samples = []

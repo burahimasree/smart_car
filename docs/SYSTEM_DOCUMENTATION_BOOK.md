@@ -75,7 +75,7 @@ The Smart Car is an autonomous voice-controlled robot built on a Raspberry Pi 4 
 │                                    USER INTERACTION                                  │
 │                                                                                      │
 │    🎤 Voice Command          👁️ Visual Scene           🖥️ Display Feedback           │
-│    "Hey Veera, follow       Camera sees person        Face shows LISTENING          │
+│    "Hey Robo, follow        Camera sees person        Face shows LISTENING          │
 │     that person"            at position (x,y)         LED ring spins green          │
 └───────────────────────────────────────────┬─────────────────────────────────────────┘
                                             │

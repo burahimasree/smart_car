@@ -821,7 +821,7 @@ wakeword:
   engine: porcupine
   access_key: ${ENV:PV_ACCESS_KEY}
   sensitivity: 0.75
-  model: ${PROJECT_ROOT}/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn
+  model: ${PROJECT_ROOT}/models/wakeword/hey_robo.ppn
 
 # ═══════════════════════════════════════════════════════════════════════
 # STT CONFIGURATION (faster-whisper)

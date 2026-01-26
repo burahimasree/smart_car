@@ -86,7 +86,7 @@ if direction == "forward" and (self.state.get("esp_obstacle") or self.state.get(
 #### A. Voice Command Pipeline
 | Test | Input | Expected | Latency Budget |
 |------|-------|----------|----------------|
-| Wakeword | "Hey Veera" | ww.detected published | <500ms |
+| Wakeword | "Hey Robo" | ww.detected published | <500ms |
 | STT | Speech audio | stt.transcription published | <3s |
 | LLM | "go forward" | nav.command {direction: forward} | <2s |
 | TTS | Response text | Audio playback | <1s |
@@ -141,7 +141,7 @@ UART:           5ms RX check interval
 
 ### What Robot "Feels" During Voice Command
 ```
-T+0.0s:   [Hear wakeword] "Hey Veera"
+T+0.0s:   [Hear wakeword] "Hey Robo"
 T+0.5s:   [Start listening] Vision pauses, display shows "listening"
 T+3.0s:   [STT complete] Heard "go forward"
 T+3.1s:   [Ask LLM] "What should I do with 'go forward'?"

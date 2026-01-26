@@ -46,7 +46,7 @@ if not access_key:
     print('ERROR: PV_ACCESS_KEY not set!')
     sys.exit(1)
 
-model_path = '/home/dev/smart_car/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn'
+model_path = '/home/dev/smart_car/models/wakeword/hey_robo.ppn'
 print(f'Loading Porcupine...')
 
 porcupine = pvporcupine.create(
@@ -79,7 +79,7 @@ print(f'Audio stream: {HW_RATE}Hz -> resample to {TARGET_RATE}Hz')
 
 print('')
 print('=' * 50)
-print('  LISTENING FOR "HEY VEERA"')
+print('  LISTENING FOR "HEY ROBO"')
 print('  Say it multiple times!')
 print('  Ctrl+C to stop')
 print('=' * 50)

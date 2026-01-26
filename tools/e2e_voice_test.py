@@ -2,7 +2,7 @@
 """End-to-end voice pipeline test: Wakeword → STT → LLM → TTS.
 
 This script demonstrates the complete voice assistant flow:
-1. Listen for wakeword "Hey Veera"
+1. Listen for wakeword "Hey Robo"
 2. Record user speech
 3. Transcribe with Faster-Whisper
 4. Process with Gemini LLM
@@ -37,7 +37,7 @@ def resample(audio_44k: np.ndarray, target_len: int) -> np.ndarray:
 
 
 def wait_for_wakeword(timeout: float = 30.0) -> bool:
-    """Listen for wakeword 'Hey Veera'."""
+    """Listen for wakeword 'Hey Robo'."""
     import pvporcupine
     import sounddevice as sd
     
@@ -46,7 +46,7 @@ def wait_for_wakeword(timeout: float = 30.0) -> bool:
         print("❌ PV_ACCESS_KEY not set!")
         return False
     
-    keyword_path = PROJECT_ROOT / "models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn"
+    keyword_path = PROJECT_ROOT / "models/wakeword/hey_robo.ppn"
     if not keyword_path.exists():
         print(f"❌ Keyword file not found: {keyword_path}")
         return False
@@ -60,7 +60,7 @@ def wait_for_wakeword(timeout: float = 30.0) -> bool:
     target_frame = porcupine.frame_length
     device_frame = int(target_frame * DEVICE_RATE / TARGET_RATE) + 1
     
-    print("\n🎤 Say 'HEY VEERA' to start...")
+    print("\n🎤 Say 'HEY ROBO' to start...")
     
     detected = False
     try:

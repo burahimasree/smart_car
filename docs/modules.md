@@ -1,7 +1,7 @@
 # Module Specifications
 
 ## Wakeword (`src/wakeword`)
-- `porcupine_runner.py`: Porcupine wakeword using single .ppn model (`hey-veera_en_raspberry-pi_v3_0_0.ppn`) with access key from `PV_ACCESS_KEY`. Publishes `ww.detected` payload `{timestamp, keyword:"veera", variant:"veera", confidence, source}`. Simulation via `--sim`.
+- `porcupine_runner.py`: Porcupine wakeword using single .ppn model (`hey_robo.ppn`) with access key from `PV_ACCESS_KEY`. Publishes `ww.detected` payload `{timestamp, keyword:"robo", variant:"robo", confidence, source}`. Simulation via `--sim`.
 
 ## STT (`src/stt`)
 - `engine.py`: Spawns `whisper_runner.py` via `.venvs/stte/bin/python`, ensuring `third_party/whisper.cpp/main` exists and wiring IPC overrides.

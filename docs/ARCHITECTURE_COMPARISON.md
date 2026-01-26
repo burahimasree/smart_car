@@ -281,7 +281,7 @@ You MUST reply with STRICT JSON only...
 
 ### After (Robot-Aware)
 ```
-You are VEERA, an AI assistant controlling a physical robot car 
+You are ROBO, a smart assistant for a physical robot car 
 with camera and motors.
 
 ## YOUR CAPABILITIES:
@@ -296,7 +296,7 @@ Vision: person (confidence: 92%)
 
 ## CONVERSATION CONTEXT:
 User: What do you see?
-VEERA: I see a person in front of me.
+ROBO: I see a person in front of me.
 User: Follow them
 ```
 

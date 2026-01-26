@@ -255,7 +255,7 @@ def check_porcupine() -> bool:
         
         # Find keyword file
         keyword_paths = [
-            PROJECT_ROOT / "models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn",
+            PROJECT_ROOT / "models/wakeword/hey_robo.ppn",
             PROJECT_ROOT / "models/wakeword/hey-genny_en_raspberry-pi_v3_0_0.ppn",
         ]
         

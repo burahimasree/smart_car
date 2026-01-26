@@ -48,7 +48,7 @@ from src.core.config_loader import load_config
 from pathlib import Path
 cfg = load_config(Path("/home/dev/smart_car/config/system.yaml"))
 ACCESS_KEY = cfg.get("wakeword", {}).get("access_key", "")
-MODEL_PATH = "/home/dev/smart_car/models/wakeword/hey-veera_en_raspberry-pi_v3_0_0.ppn"
+MODEL_PATH = "/home/dev/smart_car/models/wakeword/hey_robo.ppn"
 
 # Initialize Porcupine
 print("Initializing Porcupine...", flush=True)
@@ -157,7 +157,7 @@ def transcribe(audio_samples):
 
 print("", flush=True)
 print("=" * 50, flush=True)
-print("🎤 Ready! Say 'HEY VEERA' then speak your command.", flush=True)
+print("🎤 Ready! Say 'HEY ROBO' then speak your command.", flush=True)
 print("   Test will run 3 complete cycles.", flush=True)
 print("=" * 50, flush=True)
 print("", flush=True)

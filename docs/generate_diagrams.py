@@ -202,7 +202,7 @@ def generate_message_flow():
     
     # Messages
     messages = [
-        (1, 3, 8, '"Hey Veera"', 'red'),
+        (1, 3, 8, '"Hey Robo"', 'red'),
         (3, 5, 7.5, 'ww.detected', 'blue'),
         (1, 3, 7, '"Move forward"', 'red'),
         (3, 5, 6.5, 'stt.transcription', 'blue'),
