@@ -142,9 +142,16 @@ class VoiceService:
         
         # Get STT config for timeout override
         stt_cfg = self.raw_config.get("stt", {}) or {}
+        self.stt_engine = str(stt_cfg.get("engine", "faster_whisper")).lower()
         self.max_capture_seconds = float(stt_cfg.get("max_capture_seconds", MAX_CAPTURE_SECONDS))
         self.silence_threshold = float(stt_cfg.get("silence_threshold", SILENCE_THRESHOLD))
         self.silence_duration_ms = int(stt_cfg.get("silence_duration_ms", SILENCE_DURATION_MS))
+        azure_cfg = (stt_cfg.get("engines") or {}).get("azure_speech", {}) or {}
+        self.azure_speech_key = azure_cfg.get("key") or os.environ.get("AZURE_SPEECH_KEY", "")
+        self.azure_speech_region = azure_cfg.get("region") or os.environ.get("AZURE_SPEECH_REGION", "")
+        self.azure_speech_endpoint = azure_cfg.get("endpoint") or os.environ.get("AZURE_SPEECH_ENDPOINT")
+        self.azure_speech_language = azure_cfg.get("language") or stt_cfg.get("language", "en-US")
+        self.azure_speechsdk = None
         
         # Components (initialized in start())
         self.porcupine = None
@@ -212,23 +219,38 @@ class VoiceService:
             self.logger.error("Porcupine init failed: %s", e)
             return False
         
-        # Initialize faster-whisper
-        print("Loading faster-whisper model (tiny.en)...", flush=True)
-        try:
-            from faster_whisper import WhisperModel
-            self.stt_model = WhisperModel(
-                "tiny.en",
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=4,  # Use all 4 cores on Pi4
-                download_root=str(PROJECT_ROOT / "third_party/whisper-fast"),
-            )
-            print("STT model ready!", flush=True)
-            self.logger.info("faster-whisper model loaded")
-        except Exception as e:
-            print(f"ERROR: STT model load failed: {e}", flush=True)
-            self.logger.error("STT model load failed: %s", e)
-            return False
+        # Initialize STT backend
+        if self.stt_engine in {"azure_speech", "azure", "azure_stt"}:
+            print("Using Azure Speech STT", flush=True)
+            if not self.azure_speech_key or not self.azure_speech_region:
+                print("ERROR: Azure Speech key/region not configured!", flush=True)
+                self.logger.error("Azure Speech key/region not configured")
+                return False
+            try:
+                self.azure_speechsdk = self._import_speech_sdk()
+                print("Azure Speech SDK ready!", flush=True)
+                self.logger.info("Azure Speech STT ready (region=%s)", self.azure_speech_region)
+            except Exception as e:
+                print(f"ERROR: Azure Speech SDK load failed: {e}", flush=True)
+                self.logger.error("Azure Speech SDK load failed: %s", e)
+                return False
+        else:
+            print("Loading faster-whisper model (tiny.en)...", flush=True)
+            try:
+                from faster_whisper import WhisperModel
+                self.stt_model = WhisperModel(
+                    "tiny.en",
+                    device="cpu",
+                    compute_type="int8",
+                    cpu_threads=4,  # Use all 4 cores on Pi4
+                    download_root=str(PROJECT_ROOT / "third_party/whisper-fast"),
+                )
+                print("STT model ready!", flush=True)
+                self.logger.info("faster-whisper model loaded")
+            except Exception as e:
+                print(f"ERROR: STT model load failed: {e}", flush=True)
+                self.logger.error("STT model load failed: %s", e)
+                return False
         
         # Initialize PyAudio
         self.pa = pyaudio.PyAudio()
@@ -384,9 +406,90 @@ class VoiceService:
                 publish_json(self.pub, TOPIC_STT, payload)
             except:
                 pass
+
+    @staticmethod
+    def _import_speech_sdk():
+        try:
+            import azure.cognitiveservices.speech as speechsdk  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                "azure-cognitiveservices-speech is required for Azure STT; install in stt venv"
+            ) from exc
+        return speechsdk
+
+    @staticmethod
+    def _extract_azure_confidence(speechsdk, result) -> float:
+        try:
+            json_blob = result.properties.get(speechsdk.PropertyId.SpeechServiceResponse_JsonResult)
+            if not json_blob:
+                return 0.0
+            data = json.loads(json_blob)
+            nbest = data.get("NBest") or data.get("nbest")
+            if isinstance(nbest, list) and nbest:
+                conf = nbest[0].get("Confidence") or nbest[0].get("confidence")
+                if conf is not None:
+                    return max(0.0, min(1.0, float(conf)))
+        except Exception:
+            return 0.0
+        return 0.0
+
+    def _transcribe_azure(self, audio: np.ndarray) -> tuple:
+        if not self.azure_speechsdk:
+            return "", 0.0, 0
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+
+        try:
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(TARGET_RATE)
+                wf.writeframes(audio.tobytes())
+
+            speech_config = self.azure_speechsdk.SpeechConfig(
+                subscription=self.azure_speech_key,
+                region=self.azure_speech_region,
+            )
+            if self.azure_speech_endpoint:
+                speech_config.endpoint = self.azure_speech_endpoint
+            speech_config.speech_recognition_language = self.azure_speech_language
+
+            audio_config = self.azure_speechsdk.audio.AudioConfig(filename=wav_path)
+            recognizer = self.azure_speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+            )
+
+            start = time.time()
+            result = recognizer.recognize_once_async().get()
+            azure_ms = int((time.time() - start) * 1000)
+
+            if result.reason == self.azure_speechsdk.ResultReason.RecognizedSpeech:
+                text = (result.text or "").strip()
+                confidence = self._extract_azure_confidence(self.azure_speechsdk, result) or 0.9
+                return text, confidence, azure_ms
+
+            if result.reason == self.azure_speechsdk.ResultReason.NoMatch:
+                self.logger.debug("Azure STT no match")
+            elif result.reason == self.azure_speechsdk.ResultReason.Canceled:
+                details = result.cancellation_details
+                self.logger.error("Azure STT canceled: %s", details.reason)
+                if details.error_details:
+                    self.logger.error("Azure STT error: %s", details.error_details)
+            else:
+                self.logger.warning("Azure STT unexpected result: %s", result.reason)
+            return "", 0.0, azure_ms
+        finally:
+            try:
+                os.unlink(wav_path)
+            except Exception:
+                pass
     
     def _transcribe(self, audio: np.ndarray) -> tuple:
-        """Transcribe audio using faster-whisper."""
+        """Transcribe audio using configured STT engine."""
+        if self.stt_engine in {"azure_speech", "azure", "azure_stt"}:
+            return self._transcribe_azure(audio)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             wav_path = f.name
         

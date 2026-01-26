@@ -62,7 +62,7 @@ wakeword:
   mic_device: smartcar_capture
 
 stt:
-  engine: faster_whisper
+  engine: azure_speech
   mic_hw: smartcar_capture
   sample_rate: 16000
   language: en
