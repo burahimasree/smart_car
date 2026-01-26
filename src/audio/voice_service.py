@@ -291,8 +291,8 @@ class VoiceService:
         print("", flush=True)
         print("=" * 50, flush=True)
         print("🎤 Voice service ready!", flush=True)
-        print("   Say 'HEY VEERA' to trigger", flush=True)
-        print("   Say 'HEY VEERA' during capture to interrupt!", flush=True)
+        print("   Say 'HEY ROBO' to trigger", flush=True)
+        print("   Say 'HEY ROBO' during capture to interrupt!", flush=True)
         print(f"   Max capture: {self.max_capture_seconds}s (noisy env safe)", flush=True)
         print("=" * 50, flush=True)
         print("", flush=True)
@@ -357,7 +357,7 @@ class VoiceService:
             try:
                 payload = {
                     "timestamp": int(time.time()),
-                    "keyword": "hey veera",
+                    "keyword": "hey robo",
                     "confidence": 0.99,
                     "source": "voice_service",
                 }
