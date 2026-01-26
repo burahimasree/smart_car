@@ -120,8 +120,9 @@ class AzureOpenAIRunner:
         if not text:
             return {}, ""
         system_prompt = (
-            "You are ROBO, a smart assistant for a robotic car. "
-            "Reply in a short, friendly sentence."
+            "You are ROBO, a full-featured hybrid smart assistant (like Google Assistant/Alexa) "
+            "that also has a robotic car body and a camera. Respond helpfully, clearly, and interactively "
+            "to general questions and requests. Keep responses concise unless the user asks for detail."
         )
         messages = [
             {"role": "system", "content": system_prompt},
