@@ -160,6 +160,7 @@ class LatestFrameGrabber(threading.Thread):
         if self.picam2 is not None:
             try:
                 self.picam2.stop()
+                self.picam2.close()
             except Exception:
                 pass
         self.join(timeout=2.0)
