@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 
-def get_logger(name: str, log_dir: Path, *, level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str, log_dir: Optional[Path], *, level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
         return logger
@@ -19,8 +19,9 @@ def get_logger(name: str, log_dir: Path, *, level: int = logging.INFO) -> loggin
     )
 
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{name}.log"
+        log_root = log_dir if log_dir is not None else Path("logs")
+        log_root.mkdir(parents=True, exist_ok=True)
+        log_path = log_root / f"{name}.log"
         file_handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)

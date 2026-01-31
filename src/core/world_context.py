@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import zmq
@@ -18,7 +19,7 @@ from src.core.ipc import (
 )
 from src.core.logging_setup import get_logger
 
-logger = get_logger("world.context", None)
+logger = get_logger("world.context", Path("logs"))
 
 
 @dataclass
