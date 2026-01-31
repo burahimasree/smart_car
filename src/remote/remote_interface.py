@@ -7,6 +7,7 @@ remote intents into internal IPC topics for the orchestrator.
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -232,7 +233,16 @@ class RemoteSupervisor:
 
         handler = self._make_handler()
         server = ThreadingHTTPServer((self.bind_host, self.bind_port), handler)
-        self.logger.info("Remote interface listening on %s:%s", self.bind_host, self.bind_port)
+        cert_path = Path("/home/dev/smart_car/certs/cert.pem")
+        key_path = Path("/home/dev/smart_car/certs/key.pem")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        self.logger.info(
+            "Remote interface listening on https://%s:%s",
+            self.bind_host,
+            self.bind_port,
+        )
         try:
             server.serve_forever()
         except KeyboardInterrupt:
