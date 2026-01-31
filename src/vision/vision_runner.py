@@ -61,6 +61,7 @@ class LatestFrameGrabber(threading.Thread):
         self.cap: Optional[cv2.VideoCapture] = None
         self.picam2 = None
         self._backend = "cv2"
+        self.backend = "cv2"
         self._opened = False
 
         if use_picam2:
@@ -75,6 +76,7 @@ class LatestFrameGrabber(threading.Thread):
                 picam2.start()
                 self.picam2 = picam2
                 self._backend = "picam2"
+                self.backend = "picam2"
                 self._opened = True
             except Exception:
                 self.picam2 = None
@@ -83,6 +85,7 @@ class LatestFrameGrabber(threading.Thread):
             self.cap = cv2.VideoCapture(camera_index)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
             self._opened = self.cap.isOpened()
+            self.backend = "cv2"
         
         # Thread-safe frame storage
         self._lock = threading.Lock()
@@ -344,7 +347,7 @@ def run():
             grabber = None
             return False
         grabber.start()
-        logger.info("Started threaded frame grabber at %.1f FPS", target_fps)
+        logger.info("Started threaded frame grabber (%s) at %.1f FPS", grabber.backend, target_fps)
         return True
 
     def _stop_grabber() -> None:
