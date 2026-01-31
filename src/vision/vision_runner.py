@@ -112,9 +112,12 @@ class LatestFrameGrabber(threading.Thread):
     def stop(self) -> None:
         """Stop capture and release camera."""
         self._stop_event.set()
-        self.join(timeout=2.0)
         if self.cap:
             self.cap.release()
+        self.join(timeout=2.0)
+        self._opened = False
+        if not self.is_alive():
+            self.cap = None
 
 
 class MockDetector:
