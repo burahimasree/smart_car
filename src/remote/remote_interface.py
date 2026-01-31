@@ -28,6 +28,8 @@ from src.core.ipc import (
     TOPIC_REMOTE_INTENT,
     TOPIC_REMOTE_SESSION,
     TOPIC_VISN,
+    TOPIC_VISN_CAPTURED,
+    TOPIC_VISN_FRAME,
     make_publisher,
     make_subscriber,
     publish_json,
@@ -43,12 +45,14 @@ class TelemetryState:
         self.vision_mode: str = "off"
         self.vision_paused: bool = False
         self.last_detection: Optional[Dict[str, Any]] = None
+        self.detection_history: List[Dict[str, Any]] = []
         self.last_esp: Optional[Dict[str, Any]] = None
         self.last_alert: Optional[str] = None
         self.last_health: Optional[Dict[str, Any]] = None
         self.remote_session_active: bool = False
         self.remote_last_seen: float = 0.0
         self.last_remote_event: Optional[Dict[str, Any]] = None
+        self.last_capture: Optional[Dict[str, Any]] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
@@ -68,12 +72,14 @@ class TelemetryState:
             if obstacle or warning or (self.last_alert is not None):
                 safety_stop = True
 
+            stream_url = "/stream/mjpeg" if self.vision_mode == "on_with_stream" else None
             return {
                 "remote_session_active": self.remote_session_active,
                 "remote_last_seen": int(self.remote_last_seen) if self.remote_last_seen else None,
                 "mode": self.display_state,
                 "display_text": self.display_text,
                 "vision_mode": self.vision_mode,
+                "stream_url": stream_url,
                 "vision_active": self.vision_mode != "off",
                 "vision_paused": self.vision_paused,
                 "motor_enabled": motor_enabled,
@@ -81,6 +87,8 @@ class TelemetryState:
                 "safety_alert": self.last_alert,
                 "sensor": self.last_esp.get("data") if self.last_esp else None,
                 "vision_last_detection": self.last_detection,
+                "detection_history": list(self.detection_history),
+                "last_capture": self.last_capture,
                 "health": self.last_health,
                 "remote_event": self.last_remote_event,
             }
@@ -99,6 +107,7 @@ class RemoteSupervisor:
         self.bind_port = int(remote_cfg.get("port", 8770))
         self.allowed_cidrs = self._parse_cidrs(remote_cfg.get("allowed_cidrs", ["100.64.0.0/10"]))
         self.session_timeout_s = float(remote_cfg.get("session_timeout_s", 15.0))
+        self._detection_history_max = int(remote_cfg.get("detection_history_max", 200))
 
         self.telemetry = TelemetryState()
         self._ctx = zmq.Context.instance()
@@ -110,6 +119,8 @@ class RemoteSupervisor:
         for topic in [
             TOPIC_ESP,
             TOPIC_VISN,
+            TOPIC_VISN_FRAME,
+            TOPIC_VISN_CAPTURED,
             TOPIC_HEALTH,
             TOPIC_REMOTE_EVENT,
         ]:
@@ -129,6 +140,9 @@ class RemoteSupervisor:
 
         self._running = True
         self._last_session_emit = False
+        self._stream_lock = threading.Condition()
+        self._latest_frame: Optional[bytes] = None
+        self._latest_frame_ts: float = 0.0
 
     @staticmethod
     def _parse_cidrs(raw: Any) -> List[Any]:
@@ -198,6 +212,13 @@ class RemoteSupervisor:
                 topic, raw = sock.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
                 break
+            if topic == TOPIC_VISN_FRAME:
+                with self._stream_lock:
+                    self._latest_frame = raw
+                    self._latest_frame_ts = time.time()
+                    self._stream_lock.notify_all()
+                continue
+
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
@@ -214,6 +235,17 @@ class RemoteSupervisor:
                     self.telemetry.vision_paused = bool(payload.get("pause", False))
                 elif topic == TOPIC_VISN:
                     self.telemetry.last_detection = payload
+                    label = str(payload.get("label", ""))
+                    if label and label != "none":
+                        entry = {
+                            "label": label,
+                            "bbox": payload.get("bbox"),
+                            "confidence": payload.get("confidence"),
+                            "ts": payload.get("ts"),
+                        }
+                        self.telemetry.detection_history.append(entry)
+                        if len(self.telemetry.detection_history) > self._detection_history_max:
+                            self.telemetry.detection_history = self.telemetry.detection_history[-self._detection_history_max:]
                 elif topic == TOPIC_ESP:
                     self.telemetry.last_esp = payload
                     alert = payload.get("alert")
@@ -225,6 +257,8 @@ class RemoteSupervisor:
                     self.telemetry.last_health = payload
                 elif topic == TOPIC_REMOTE_EVENT:
                     self.telemetry.last_remote_event = payload
+                elif topic == TOPIC_VISN_CAPTURED:
+                    self.telemetry.last_capture = payload
 
     def serve(self) -> None:
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
@@ -274,6 +308,39 @@ class RemoteSupervisor:
             def do_GET(self) -> None:
                 if not self._allowed():
                     self._send_json(403, {"error": "forbidden"})
+                    return
+                if self.path == "/stream/mjpeg":
+                    with supervisor.telemetry.lock:
+                        vision_mode = supervisor.telemetry.vision_mode
+                    if vision_mode != "on_with_stream":
+                        self._send_json(409, {"error": "stream_disabled"})
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    try:
+                        while True:
+                            with supervisor.telemetry.lock:
+                                if supervisor.telemetry.vision_mode != "on_with_stream":
+                                    break
+                            with supervisor._stream_lock:
+                                if supervisor._latest_frame is None:
+                                    supervisor._stream_lock.wait(timeout=1.0)
+                                frame = supervisor._latest_frame
+                            if frame is None:
+                                continue
+                            self.wfile.write(b"--frame\r\n")
+                            self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                            self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("utf-8"))
+                            self.wfile.write(frame)
+                            self.wfile.write(b"\r\n")
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    except Exception as exc:  # pragma: no cover - defensive
+                        supervisor.logger.info("Stream closed: %s", exc)
                     return
                 if self.path in {"/status", "/telemetry"}:
                     supervisor._touch_session()

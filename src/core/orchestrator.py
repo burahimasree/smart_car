@@ -306,6 +306,17 @@ class Orchestrator:
         self._last_transcript = text
         publish_json(self.cmd_pub, TOPIC_CMD_VISN_CAPTURE, {"request_id": request_id, "source": "orchestrator"})
 
+    def _request_frame_capture(self, source: str) -> str:
+        if self.vision_mode == VisionMode.OFF:
+            self._set_vision_mode(VisionMode.ON_NO_STREAM, source=source)
+        request_id = f"capture-{int(time.time() * 1000)}"
+        publish_json(
+            self.cmd_pub,
+            TOPIC_CMD_VISN_CAPTURE,
+            {"request_id": request_id, "source": source, "save": True, "purpose": "capture_frame"},
+        )
+        return request_id
+
     def on_vision(self, payload: Dict[str, Any]) -> None:
         self._last_vision = payload
         if self._vision_capture_pending:
@@ -536,6 +547,10 @@ class Orchestrator:
         if intent in {"disable_stream"}:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
             self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"capture_frame"}:
+            request_id = self._request_frame_capture("remote_app")
+            self._publish_remote_event("accepted", {"intent": intent, "request_id": request_id})
             return
         if intent in {"scan", "start_scan"}:
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "scan", "source": "remote_app"})

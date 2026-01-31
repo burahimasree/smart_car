@@ -1,7 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 .gradle/
-mobile_app/
 *.py[cod]
 *$py.class
 

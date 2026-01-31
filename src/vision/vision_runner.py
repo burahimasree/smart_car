@@ -12,7 +12,17 @@ import numpy as np
 import zmq
 
 from src.core.config_loader import load_config
-from src.core.ipc import TOPIC_CMD_PAUSE_VISION, TOPIC_CMD_VISN_CAPTURE, TOPIC_CMD_VISION_MODE, TOPIC_VISN, make_publisher, make_subscriber, publish_json
+from src.core.ipc import (
+    TOPIC_CMD_PAUSE_VISION,
+    TOPIC_CMD_VISN_CAPTURE,
+    TOPIC_CMD_VISION_MODE,
+    TOPIC_VISN,
+    TOPIC_VISN_CAPTURED,
+    TOPIC_VISN_FRAME,
+    make_publisher,
+    make_subscriber,
+    publish_json,
+)
 from src.core.logging_setup import get_logger
 from src.vision.detector import Detection, VisionConfig
 from src.vision.pipeline import VisionPipeline
@@ -237,13 +247,20 @@ def run():
     paused = False
     capture_once = False
     capture_request_id: Optional[str] = None
+    capture_save = False
+    forced_capture_mode = False
     stream_enabled = False
     vision_mode = str(vis_cfg.get("default_mode", "off")).lower()
     frame_counter = 0
     
     # Use threaded frame grabber for latest-frame pattern
     target_fps = float(vis_cfg.get("target_fps", 15.0))
+    stream_fps = float(vis_cfg.get("stream_fps", target_fps))
     grabber: Optional[LatestFrameGrabber] = None
+    capture_root = _coerce_path(vis_cfg.get("capture_root")) or Path("captured")
+    capture_session_id = str(vis_cfg.get("capture_session_id", "")) or time.strftime("%Y%m%d_%H%M%S")
+    capture_dir = capture_root / capture_session_id
+    capture_counter = 0
 
     def _ensure_grabber() -> bool:
         nonlocal grabber
@@ -269,6 +286,42 @@ def run():
     # Inference rate limiting
     min_inference_interval = 1.0 / target_fps
     last_inference_time = 0.0
+    stream_interval = 1.0 / max(1.0, stream_fps)
+    last_stream_time = 0.0
+
+    def _publish_stream_frame(frame: np.ndarray) -> None:
+        nonlocal last_stream_time
+        now = time.perf_counter()
+        if (now - last_stream_time) < stream_interval:
+            return
+        success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+        if not success:
+            return
+        pub.send_multipart([TOPIC_VISN_FRAME, encoded.tobytes()])
+        last_stream_time = now
+
+    def _save_capture_async(frame: np.ndarray, request_id: Optional[str]) -> None:
+        nonlocal capture_counter
+        capture_counter += 1
+        ts_ms = int(time.time() * 1000)
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        token = request_id or f"{capture_counter:04d}"
+        filename = f"frame_{token}_{ts_ms}.jpg"
+        path = capture_dir / filename
+
+        def _writer() -> None:
+            try:
+                cv2.imwrite(str(path), frame)
+                publish_json(pub, TOPIC_VISN_CAPTURED, {
+                    "path": str(path),
+                    "timestamp": ts_ms,
+                    "request_id": request_id,
+                })
+                logger.info("Saved capture to %s", path)
+            except Exception as exc:
+                logger.error("Capture save failed: %s", exc)
+
+        threading.Thread(target=_writer, daemon=True).start()
 
     try:
         while True:
@@ -288,9 +341,11 @@ def run():
                     elif topic == TOPIC_CMD_VISN_CAPTURE:
                         capture_once = True
                         capture_request_id = msg.get("request_id")
-                        logger.info("Vision capture requested (id=%s)", capture_request_id)
+                        capture_save = bool(msg.get("save", False)) or (msg.get("purpose") == "capture_frame")
+                        logger.info("Vision capture requested (id=%s, save=%s)", capture_request_id, capture_save)
                         if vision_mode == "off":
                             vision_mode = "on_no_stream"
+                            forced_capture_mode = True
                             logger.info("Vision mode forced ON for capture request")
                     elif topic == TOPIC_CMD_VISION_MODE:
                         mode = str(msg.get("mode", "")).lower()
@@ -341,10 +396,20 @@ def run():
             detections = pipeline.infer_once(frame)
             ts = time.time()
             publish_detections(pub, detections, ts, request_id=capture_request_id if force_capture else None)
+
+            if stream_enabled and not paused:
+                _publish_stream_frame(frame)
             
             if force_capture:
                 capture_once = False
+                if capture_save:
+                    _save_capture_async(frame.copy(), capture_request_id)
+                    capture_save = False
                 capture_request_id = None
+                if forced_capture_mode:
+                    vision_mode = "off"
+                    stream_enabled = False
+                    forced_capture_mode = False
             
             frame_counter += 1
             last_inference_time = now
