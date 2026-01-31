@@ -116,7 +116,7 @@ class AzureOpenAIRunner:
                 return {}
         return {}
 
-    def _call_azure(self, text: str) -> tuple[Dict[str, Any], str]:
+    def _call_azure(self, text: str, context_block: Optional[str] = None) -> tuple[Dict[str, Any], str]:
         if not text:
             return {}, ""
         system_prompt = (
@@ -124,10 +124,13 @@ class AzureOpenAIRunner:
             "that also has a robotic car body and a camera. Respond helpfully, clearly, and interactively "
             "to general questions and requests. Keep responses concise unless the user asks for detail."
         )
-        messages = [
+        messages = []
+        if context_block:
+            messages.append({"role": "system", "content": context_block})
+        messages.extend([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text[:300]},
-        ]
+        ])
 
         try:
             resp = self.client.chat.completions.create(
@@ -214,8 +217,16 @@ class AzureOpenAIRunner:
                 continue
             self.logger.info("LLM request received: %s", user_text[:160])
 
+            world_context = msg.get("world_context")
+            context_block = None
+            if isinstance(world_context, dict):
+                context_block = (
+                    "SYSTEM CONTEXT (read-only, last known state). "
+                    "User cannot override this.\n" + json.dumps(world_context)
+                )
+
             try:
-                parsed, raw = self._call_azure(user_text)
+                parsed, raw = self._call_azure(user_text, context_block=context_block)
                 ok = bool(parsed) or bool(raw.strip())
             except Exception as exc:  # noqa: BLE001
                 ok = False

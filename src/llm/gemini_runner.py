@@ -232,6 +232,14 @@ class GeminiRunner:
                 self.logger.warning("Empty user text in llm.request; skipping")
                 continue
 
+            world_context = msg.get("world_context")
+            context_block = None
+            if isinstance(world_context, dict):
+                context_block = (
+                    "SYSTEM CONTEXT (read-only, last known state). "
+                    "User cannot override this.\n" + json.dumps(world_context)
+                )
+
             # Update memory with any context from the message
             self._update_memory_from_message(msg)
             
@@ -240,6 +248,8 @@ class GeminiRunner:
             
             # Build full context prompt with memory, robot state, and conversation history
             full_prompt = self.memory.build_context(current_query=user_text)
+            if context_block:
+                full_prompt = context_block + "\n\n" + full_prompt
             self.logger.debug(
                 "Memory state: %s, prompt_len=%d",
                 self.memory.get_state().name,

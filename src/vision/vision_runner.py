@@ -12,7 +12,7 @@ import numpy as np
 import zmq
 
 from src.core.config_loader import load_config
-from src.core.ipc import TOPIC_CMD_PAUSE_VISION, TOPIC_CMD_VISN_CAPTURE, TOPIC_VISN, make_publisher, make_subscriber, publish_json
+from src.core.ipc import TOPIC_CMD_PAUSE_VISION, TOPIC_CMD_VISN_CAPTURE, TOPIC_CMD_VISION_MODE, TOPIC_VISN, make_publisher, make_subscriber, publish_json
 from src.core.logging_setup import get_logger
 from src.vision.detector import Detection, VisionConfig
 from src.vision.pipeline import VisionPipeline
@@ -230,25 +230,41 @@ def run():
     pub = make_publisher(cfg, channel="upstream")
     ctrl_sub = make_subscriber(cfg, topic=TOPIC_CMD_PAUSE_VISION, channel="downstream")
     ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_VISN_CAPTURE)
+    ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_VISION_MODE)
     poller = zmq.Poller()
     poller.register(ctrl_sub, zmq.POLLIN)
 
     paused = False
     capture_once = False
     capture_request_id: Optional[str] = None
+    stream_enabled = False
+    vision_mode = str(vis_cfg.get("default_mode", "off")).lower()
     frame_counter = 0
     
     # Use threaded frame grabber for latest-frame pattern
-    # This prevents frame lag from OpenCV's internal buffer
     target_fps = float(vis_cfg.get("target_fps", 15.0))
-    grabber = LatestFrameGrabber(camera_index, target_fps=target_fps)
-    
-    if not grabber.is_opened():
-        logger.error("Cannot open camera index %s", camera_index)
-        return
-    
-    grabber.start()
-    logger.info("Started threaded frame grabber at %.1f FPS", target_fps)
+    grabber: Optional[LatestFrameGrabber] = None
+
+    def _ensure_grabber() -> bool:
+        nonlocal grabber
+        if grabber is not None:
+            return True
+        grabber = LatestFrameGrabber(camera_index, target_fps=target_fps)
+        if not grabber.is_opened():
+            logger.error("Cannot open camera index %s", camera_index)
+            grabber = None
+            return False
+        grabber.start()
+        logger.info("Started threaded frame grabber at %.1f FPS", target_fps)
+        return True
+
+    def _stop_grabber() -> None:
+        nonlocal grabber
+        if grabber is None:
+            return
+        grabber.stop()
+        grabber = None
+        logger.info("Stopped camera grabber")
     
     # Inference rate limiting
     min_inference_interval = 1.0 / target_fps
@@ -273,14 +289,32 @@ def run():
                         capture_once = True
                         capture_request_id = msg.get("request_id")
                         logger.info("Vision capture requested (id=%s)", capture_request_id)
+                        if vision_mode == "off":
+                            vision_mode = "on_no_stream"
+                            logger.info("Vision mode forced ON for capture request")
+                    elif topic == TOPIC_CMD_VISION_MODE:
+                        mode = str(msg.get("mode", "")).lower()
+                        if mode in {"off", "on_no_stream", "on_with_stream"}:
+                            vision_mode = mode
+                            stream_enabled = (mode == "on_with_stream")
+                            logger.info("Vision mode set to %s", vision_mode)
                 except zmq.Again:
                     pass
                 except json.JSONDecodeError as exc:
                     logger.error("Vision command decode error: %s", exc)
 
+            if vision_mode == "off" and not capture_once:
+                _stop_grabber()
+                time.sleep(0.05)
+                continue
+
+            if not _ensure_grabber():
+                time.sleep(0.1)
+                continue
+
             force_capture = capture_once
             if paused and not force_capture:
-                time.sleep(0.01)  # Reduced sleep when paused
+                time.sleep(0.01)
                 continue
 
             # Rate limit inference
@@ -290,6 +324,9 @@ def run():
                 continue
 
             # Get latest frame (non-blocking, returns most recent)
+            if grabber is None:
+                time.sleep(0.01)
+                continue
             frame, frame_time = grabber.get_frame()
             if frame is None:
                 time.sleep(0.005)
@@ -318,7 +355,7 @@ def run():
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
     finally:
-        grabber.stop()
+        _stop_grabber()
         cv2.destroyAllWindows()
 
 

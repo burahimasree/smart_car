@@ -27,6 +27,7 @@ from src.core.ipc import (
     TOPIC_CMD_LISTEN_STOP,
     TOPIC_CMD_PAUSE_VISION,
     TOPIC_CMD_VISN_CAPTURE,
+    TOPIC_CMD_VISION_MODE,
     TOPIC_DISPLAY_STATE,
     TOPIC_DISPLAY_TEXT,
     TOPIC_ESP,
@@ -34,6 +35,9 @@ from src.core.ipc import (
     TOPIC_LLM_REQ,
     TOPIC_LLM_RESP,
     TOPIC_NAV,
+    TOPIC_REMOTE_EVENT,
+    TOPIC_REMOTE_INTENT,
+    TOPIC_REMOTE_SESSION,
     TOPIC_STT,
     TOPIC_TTS,
     TOPIC_VISN,
@@ -43,6 +47,7 @@ from src.core.ipc import (
     publish_json,
 )
 from src.core.logging_setup import get_logger
+from src.core.world_context import WorldContextAggregator
 
 logger = get_logger("orchestrator", Path("logs"))
 
@@ -53,6 +58,12 @@ class Phase(Enum):
     THINKING = auto()
     SPEAKING = auto()
     ERROR = auto()
+
+
+class VisionMode(Enum):
+    OFF = "off"
+    ON_NO_STREAM = "on_no_stream"
+    ON_WITH_STREAM = "on_with_stream"
 
 
 class Orchestrator:
@@ -78,6 +89,8 @@ class Orchestrator:
         self.config = load_config(Path("config/system.yaml"))
         self.cmd_pub = make_publisher(self.config, channel="downstream", bind=True)
         self.events_sub = make_subscriber(self.config, channel="upstream", bind=True)
+        self._world_context = WorldContextAggregator(self.config)
+        self._world_context.start()
         self._phase = Phase.IDLE
         self._phase_entered_ts = time.time()
         self._last_interaction_ts = time.time()
@@ -85,8 +98,12 @@ class Orchestrator:
         self._last_vision: Optional[Dict[str, Any]] = None
         self._last_nav_direction = "stopped"
         self._vision_capture_pending: Optional[str] = None
+        self._vision_capture_requested_ts: Optional[float] = None
         self._esp_obstacle = False
         self._esp_min_distance = -1
+
+        self._remote_session_active = False
+        self._remote_last_seen = 0.0
         
         orch_cfg = self.config.get("orchestrator", {}) or {}
         self.auto_trigger_enabled = bool(orch_cfg.get("auto_trigger_enabled", True))
@@ -97,11 +114,19 @@ class Orchestrator:
         self.stt_min_confidence = float(stt_cfg.get("min_confidence", 0.3))
         self.error_recovery_s = 2.0
 
+        remote_cfg = self.config.get("remote_interface", {}) or {}
+        self.remote_session_timeout_s = float(remote_cfg.get("session_timeout_s", 15.0))
+
+        vision_cfg = self.config.get("vision", {}) or {}
+        default_mode = str(vision_cfg.get("default_mode", "off")).lower()
+        self.vision_mode = self._coerce_vision_mode(default_mode)
+
     def _publish_led_state(self, state: str) -> None:
         publish_json(self.cmd_pub, TOPIC_DISPLAY_STATE, {
             "state": state,
             "phase": self._phase.name,
             "timestamp": int(time.time()),
+            "source": "orchestrator",
         })
         logger.debug("LED: %s", state)
 
@@ -109,6 +134,7 @@ class Orchestrator:
         publish_json(self.cmd_pub, TOPIC_DISPLAY_TEXT, {
             "text": text,
             "timestamp": int(time.time()),
+            "source": "orchestrator",
         })
 
     @property
@@ -137,12 +163,14 @@ class Orchestrator:
         else:
             self._publish_led_state("listening")
             self._publish_display_text("Listening...")
-        publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": True})
-        publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_START, {"start": True})
+        if self.vision_mode != VisionMode.OFF:
+            publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": True, "source": "orchestrator"})
+        publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_START, {"start": True, "source": "orchestrator"})
 
     def _exit_listening(self, reason: str) -> None:
-        publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_STOP, {"stop": True, "reason": reason})
-        publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": False})
+        publish_json(self.cmd_pub, TOPIC_CMD_LISTEN_STOP, {"stop": True, "reason": reason, "source": "orchestrator"})
+        if self.vision_mode != VisionMode.OFF:
+            publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": False, "source": "orchestrator"})
 
     def _enter_thinking(self, text: str, vision: Optional[Dict[str, Any]] = None) -> None:
         self._publish_led_state("thinking")
@@ -151,21 +179,24 @@ class Orchestrator:
         if vision:
             payload["vision"] = vision
         payload["direction"] = self._last_nav_direction
+        payload["world_context"] = self._world_context.get_snapshot()
+        payload["context_note"] = "system_observation_only_last_known_state"
+        payload["source"] = "orchestrator"
         publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
         logger.info("LLM request text: %s", text[:120])
 
     def _enter_speaking(self, text: str, direction: Optional[str] = None) -> None:
         self._publish_led_state("tts_processing")
         self._publish_display_text(f"Saying: {text[:120]}")
-        if direction and direction != "stop":
+        if direction:
             self._last_nav_direction = direction
-            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction})
-        publish_json(self.cmd_pub, TOPIC_TTS, {"text": text})
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "orchestrator"})
+        publish_json(self.cmd_pub, TOPIC_TTS, {"text": text, "source": "orchestrator"})
 
     def _enter_idle(self) -> None:
         self._publish_led_state("idle")
         self._publish_display_text("Idle")
-        publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": False})
+        # Vision lifecycle is managed explicitly; do not auto-resume here.
 
     def _notify_stt_failure(self, reason: str) -> None:
         feedback_messages = {
@@ -190,7 +221,7 @@ class Orchestrator:
             message = random.choice(choices)
         else:
             message = "Something went wrong. Please try again."
-        publish_json(self.cmd_pub, TOPIC_TTS, {"text": message, "notification": True})
+        publish_json(self.cmd_pub, TOPIC_TTS, {"text": message, "notification": True, "source": "orchestrator"})
         logger.info("STT failure feedback: %s", reason)
 
     def on_wakeword(self, payload: Dict[str, Any]) -> None:
@@ -248,10 +279,13 @@ class Orchestrator:
         return any(k in text.lower() for k in keywords)
 
     def _request_vision_capture(self, text: str) -> None:
+        if self.vision_mode == VisionMode.OFF:
+            self._set_vision_mode(VisionMode.ON_NO_STREAM, source="internal")
         request_id = f"visn-{int(time.time() * 1000)}"
         self._vision_capture_pending = request_id
+        self._vision_capture_requested_ts = time.time()
         self._last_transcript = text
-        publish_json(self.cmd_pub, TOPIC_CMD_VISN_CAPTURE, {"request_id": request_id})
+        publish_json(self.cmd_pub, TOPIC_CMD_VISN_CAPTURE, {"request_id": request_id, "source": "orchestrator"})
 
     def on_vision(self, payload: Dict[str, Any]) -> None:
         self._last_vision = payload
@@ -259,6 +293,7 @@ class Orchestrator:
             request_id = payload.get("request_id")
             if request_id == self._vision_capture_pending:
                 self._vision_capture_pending = None
+                self._vision_capture_requested_ts = None
                 if self._phase == Phase.THINKING:
                     self._enter_thinking(self._last_transcript, vision=payload)
 
@@ -277,7 +312,7 @@ class Orchestrator:
                 self._enter_speaking(speak, direction)
         else:
             if direction:
-                publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction})
+                publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "orchestrator"})
                 self._last_nav_direction = direction
             self._transition("llm_no_speech")
             self._enter_idle()
@@ -333,6 +368,23 @@ class Orchestrator:
             self._publish_display_text("Recovered. Ready.")
             self._enter_idle()
 
+        if self._vision_capture_pending and self._vision_capture_requested_ts:
+            if (now - self._vision_capture_requested_ts) > 3.0:
+                logger.warning("Vision capture timeout; proceeding without vision")
+                self._vision_capture_pending = None
+                self._vision_capture_requested_ts = None
+                if self._phase == Phase.THINKING:
+                    self._enter_thinking(self._last_transcript)
+
+        if self._remote_session_active and self._remote_last_seen:
+            if (now - self._remote_last_seen) > self.remote_session_timeout_s:
+                self._remote_session_active = False
+                publish_json(self.cmd_pub, TOPIC_REMOTE_SESSION, {
+                    "active": False,
+                    "last_seen": int(self._remote_last_seen) if self._remote_last_seen else None,
+                    "source": "orchestrator",
+                })
+
     def _check_auto_trigger(self) -> None:
         if not self.auto_trigger_enabled:
             return
@@ -353,6 +405,7 @@ class Orchestrator:
         )
         logger.info("Initial phase: %s", self._phase.name)
         self._publish_led_state("idle")
+        self._set_vision_mode(self.vision_mode, source="internal")
 
         poller = zmq.Poller()
         poller.register(self.events_sub, zmq.POLLIN)
@@ -383,9 +436,99 @@ class Orchestrator:
                     self.on_esp(payload)
                 elif topic == TOPIC_HEALTH:
                     self.on_health(payload)
+                elif topic == TOPIC_REMOTE_SESSION:
+                    self.on_remote_session(payload)
+                elif topic == TOPIC_REMOTE_INTENT:
+                    self.on_remote_intent(payload)
 
             self._check_timeouts()
             self._check_auto_trigger()
+
+    def _coerce_vision_mode(self, raw: str) -> VisionMode:
+        raw = (raw or "").lower().strip()
+        if raw in {"off", "disabled", "false", "0"}:
+            return VisionMode.OFF
+        if raw in {"on_with_stream", "with_stream", "stream"}:
+            return VisionMode.ON_WITH_STREAM
+        return VisionMode.ON_NO_STREAM
+
+    def _set_vision_mode(self, mode: VisionMode, *, source: str) -> None:
+        if mode == self.vision_mode:
+            return
+        self.vision_mode = mode
+        publish_json(
+            self.cmd_pub,
+            TOPIC_CMD_VISION_MODE,
+            {"mode": mode.value, "timestamp": int(time.time()), "source": source},
+        )
+
+    def _publish_remote_event(self, event: str, payload: Dict[str, Any]) -> None:
+        message = {"event": event, "timestamp": int(time.time()), **payload}
+        publish_json(self.cmd_pub, TOPIC_REMOTE_EVENT, message)
+
+    def on_remote_session(self, payload: Dict[str, Any]) -> None:
+        active = bool(payload.get("active", False))
+        self._remote_session_active = active
+        if active:
+            self._remote_last_seen = time.time()
+
+    def on_remote_intent(self, payload: Dict[str, Any]) -> None:
+        source = payload.get("source", "unknown")
+        if source != "remote_app":
+            self._publish_remote_event("rejected", {"reason": "invalid_source", "payload": payload})
+            return
+
+        if not self._remote_session_active:
+            self._publish_remote_event("rejected", {"reason": "no_active_session", "payload": payload})
+            return
+
+        intent = str(payload.get("intent", "")).strip().lower()
+        if not intent:
+            self._publish_remote_event("rejected", {"reason": "missing_intent", "payload": payload})
+            return
+
+        if intent in {"enable_vision", "enable_perception"}:
+            self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"disable_vision", "disable_perception"}:
+            self._set_vision_mode(VisionMode.OFF, source="remote_app")
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"enable_stream"}:
+            self._set_vision_mode(VisionMode.ON_WITH_STREAM, source="remote_app")
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"disable_stream"}:
+            self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"scan", "start_scan"}:
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "scan", "source": "remote_app"})
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"stop", "stop_motion"}:
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "source": "remote_app"})
+            self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"rotate", "rotate_left", "rotate_right", "start_motion", "start"}:
+            direction = str(payload.get("direction", "")).strip().lower()
+            if not direction:
+                if intent == "rotate_left":
+                    direction = "left"
+                elif intent == "rotate_right":
+                    direction = "right"
+                elif intent in {"start_motion", "start"}:
+                    direction = "forward"
+
+            if direction not in {"forward", "backward", "left", "right"}:
+                self._publish_remote_event("rejected", {"reason": "invalid_direction", "payload": payload})
+                return
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "remote_app"})
+            self._publish_remote_event("accepted", {"intent": intent, "direction": direction})
+            return
+
+        self._publish_remote_event("rejected", {"reason": "unsupported_intent", "payload": payload})
 
 
 def main() -> None:

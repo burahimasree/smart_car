@@ -402,6 +402,7 @@ class VoiceService:
                         "total": capture_ms + whisper_ms,
                     },
                     "kind": "final",
+                    "source": "voice_service",
                 }
                 publish_json(self.pub, TOPIC_STT, payload)
             except:

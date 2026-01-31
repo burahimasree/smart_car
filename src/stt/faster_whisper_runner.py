@@ -313,6 +313,7 @@ def main() -> None:
                         "whisper": stt_ms,
                         "total": int((time.time() - loop_wall_start) * 1000),
                     },
+                    "source": "stt.faster_whisper",
                 }
                 publish_json(pub, TOPIC_STT, payload)
                 append_setup_log(f"Published transcription: {payload}")

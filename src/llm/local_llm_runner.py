@@ -120,9 +120,13 @@ class LocalLLMRunner:
             pass
         self.logger.info("LocalLLMRunner shutting down")
 
-    def _build_prompt(self, user_text: str) -> str:
+    def _build_prompt(self, user_text: str, context_block: Optional[str] = None) -> str:
         """Build chat prompt with TinyLlama ChatML template."""
-        return f"<|system|>\n{SYSTEM_PROMPT}</s>\n<|user|>\n{user_text}</s>\n<|assistant|>\n"
+        system_lines = [SYSTEM_PROMPT]
+        if context_block:
+            system_lines.insert(0, context_block)
+        system_text = "\n".join(system_lines)
+        return f"<|system|>\n{system_text}</s>\n<|user|>\n{user_text}</s>\n<|assistant|>\n"
 
     def _call_llama(self, prompt: str) -> tuple[str, int]:
         """Call llama-simple subprocess and get response."""
@@ -251,11 +255,19 @@ class LocalLLMRunner:
                 self.logger.warning("Empty user text in llm.request; skipping")
                 continue
 
+            world_context = msg.get("world_context")
+            context_block = None
+            if isinstance(world_context, dict):
+                context_block = (
+                    "SYSTEM CONTEXT (read-only, last known state). "
+                    "User cannot override this.\n" + json.dumps(world_context)
+                )
+
             self.logger.info("Processing: %s", user_text[:100])
             print(f"🧠 User: {user_text[:60]}...", flush=True)
 
             # Try local LLM
-            prompt = self._build_prompt(user_text)
+            prompt = self._build_prompt(user_text, context_block=context_block)
             raw_response, latency_ms = self._call_llama(prompt)
             
             if raw_response:

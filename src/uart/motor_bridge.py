@@ -47,6 +47,7 @@ class MotorCommand:
     speed: int = 100  # 0-100 percentage
     duration_ms: int = 0  # 0 = continuous until next command
     target: Optional[str] = None  # optional vision target
+    source: str = "unknown"
 
 
 @dataclass
@@ -246,6 +247,7 @@ class UARTMotorBridge:
                     "blocked": True,
                     "command": cmd.direction,
                     "reason": reason,
+                    "source": cmd.source,
                 })
             return False
         
@@ -263,7 +265,7 @@ class UARTMotorBridge:
         try:
             self.serial.write(formatted.encode("utf-8"))
             self.serial.flush()
-            logger.info("UART TX: %s", formatted.strip())
+            logger.info("UART TX: %s (source=%s)", formatted.strip(), cmd.source)
             return True
         except Exception as e:
             logger.error("UART write failed: %s", e)
@@ -383,12 +385,14 @@ class UARTMotorBridge:
         speed = int(payload.get("speed", 100))
         duration = int(payload.get("duration_ms", 0))
         target = payload.get("target")
+        source = str(payload.get("source", "unknown"))
 
         return MotorCommand(
             direction=direction,
             speed=max(0, min(100, speed)),
             duration_ms=max(0, duration),
             target=target,
+            source=source,
         )
     
     def request_scan(self) -> bool:

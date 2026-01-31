@@ -152,6 +152,15 @@ vision:
   label_path: ${PROJECT_ROOT}/models/vision/coco_labels.txt
   # Target FPS for inference (lower = less CPU, higher = more responsive)
   target_fps: 15
+  # Vision lifecycle control
+  default_mode: off
+
+remote_interface:
+  bind_host: 0.0.0.0
+  port: 8770
+  allowed_cidrs:
+    - 100.64.0.0/10
+  session_timeout_s: 15.0
 
 nav:
   uart_device: /dev/serial0

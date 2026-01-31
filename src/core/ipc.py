@@ -24,6 +24,12 @@ TOPIC_HEALTH = b"system.health"
 TOPIC_CMD_LISTEN_START = b"cmd.listen.start"
 TOPIC_CMD_LISTEN_STOP = b"cmd.listen.stop"
 TOPIC_CMD_TTS_SPEAK = b"cmd.tts.speak"
+TOPIC_CMD_VISION_MODE = b"cmd.vision.mode"
+
+# Remote supervision topics
+TOPIC_REMOTE_INTENT = b"remote.intent"
+TOPIC_REMOTE_SESSION = b"remote.session"
+TOPIC_REMOTE_EVENT = b"remote.event"
 
 # Display state topics
 TOPIC_DISPLAY_STATE = b"display.state"  # Current UI state (idle, listening, thinking, speaking)
