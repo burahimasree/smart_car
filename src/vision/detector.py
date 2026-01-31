@@ -8,6 +8,8 @@ from typing import List, Sequence, Tuple
 import cv2
 import numpy as np
 
+from . import pi_inference
+
 
 DEFAULT_COCO80_LABELS: Sequence[str] = (
     "person",
@@ -116,17 +118,60 @@ class YOLODetector:
     def __init__(self, config: VisionConfig) -> None:
         self.config = config
         self.net = None
+        self.sess = None
+        self.input_name: str | None = None
+        self.backend: str = config.backend.lower()
         self.labels: List[str] = []
 
     def load(self) -> None:
-        if self.config.backend.lower() != "onnx":
-            raise NotImplementedError("Only ONNX backend is supported in this build")
+        backend = self.config.backend.lower()
         if not self.config.model_path.exists():
             raise FileNotFoundError(f"YOLO weight not found: {self.config.model_path}")
-        self.net = cv2.dnn.readNetFromONNX(str(self.config.model_path))
+        if backend in {"onnx", "onnxruntime"}:
+            try:
+                import onnxruntime as ort  # type: ignore
+            except Exception:
+                ort = None
+            if ort is not None:
+                handle = pi_inference.load_model("onnx", str(self.config.model_path))
+                self.sess = handle["sess"]
+                self.input_name = self.sess.get_inputs()[0].name
+                self.backend = "onnxruntime"
+            else:
+                self.net = cv2.dnn.readNetFromONNX(str(self.config.model_path))
+                self.backend = "opencv"
+        elif backend == "opencv":
+            self.net = cv2.dnn.readNetFromONNX(str(self.config.model_path))
+            self.backend = "opencv"
+        else:
+            raise NotImplementedError(f"Unsupported vision backend: {backend}")
         self.labels = self._load_labels()
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
+        if self.backend == "onnxruntime":
+            if self.sess is None or self.input_name is None:
+                raise RuntimeError("Detector not bootstrapped. Call load() before detect().")
+            input_size = self.config.input_size
+            img_size = int(input_size[0])
+            inp = pi_inference.preprocess(frame, img_size=img_size)
+            outputs = self.sess.run(None, {self.input_name: inp.astype(np.float32)})
+            dets = pi_inference.postprocess_raw(
+                outputs,
+                frame.shape,
+                img_size,
+                "onnx",
+                self.labels,
+                self.config.confidence,
+                self.config.iou,
+            )
+            parsed: List[Detection] = []
+            for det in dets:
+                if not all(k in det for k in ("x", "y", "w", "h", "label", "conf")):
+                    continue
+                x, y, w, h = int(det["x"]), int(det["y"]), int(det["w"]), int(det["h"])
+                parsed.append(Detection(label=str(det["label"]), confidence=float(det["conf"]), bbox=(x, y, x + w, y + h)))
+            return parsed
+
         if self.net is None:
             raise RuntimeError("Detector not bootstrapped. Call load() before detect().")
 
