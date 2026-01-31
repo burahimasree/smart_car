@@ -470,6 +470,8 @@ def run():
             detections = pipeline.infer_once(frame)
             ts = time.time()
             publish_detections(pub, detections, ts, request_id=capture_request_id if force_capture else None)
+            if frame_counter % 50 == 0:
+                logger.info("Vision tick frame=%s dets=%s mode=%s", frame_counter, len(detections), vision_mode)
 
             if stream_enabled and not paused:
                 _publish_stream_frame(frame)
