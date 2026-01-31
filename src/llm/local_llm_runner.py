@@ -37,10 +37,11 @@ from src.core.ipc import (
     publish_json,
 )
 from src.core.logging_setup import get_logger
+from src.llm.conversation_memory import ConversationMemory
 
 
-# Simple system prompt for TinyLlama
-SYSTEM_PROMPT = "You are ROBO, a smart assistant for a robotic car. Keep answers to 1-2 sentences."
+# Use shared JSON schema prompt for consistent control
+SYSTEM_PROMPT = ConversationMemory.SYSTEM_PROMPT_TEMPLATE
 
 
 @dataclass
@@ -95,6 +96,10 @@ class LocalLLMRunner:
         self.sub = make_subscriber(self.config, topic=TOPIC_LLM_REQ, channel="downstream")
         self.pub = make_publisher(self.config, channel="upstream")
         self._running = True
+        self._memory = ConversationMemory(
+            max_turns=int(llm_cfg.get("memory_max_turns", 10)),
+            conversation_timeout_s=float(llm_cfg.get("conversation_timeout_s", 120.0)),
+        )
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -120,9 +125,43 @@ class LocalLLMRunner:
             pass
         self.logger.info("LocalLLMRunner shutting down")
 
-    def _build_prompt(self, user_text: str) -> str:
-        """Build chat prompt with TinyLlama ChatML template."""
-        return f"<|system|>\n{SYSTEM_PROMPT}</s>\n<|user|>\n{user_text}</s>\n<|assistant|>\n"
+    @staticmethod
+    def _normalize_direction(value: Any) -> str:
+        allowed = {"forward", "backward", "left", "right", "stop", "scan"}
+        if not value:
+            return "stop"
+        direction = str(value).strip().lower()
+        return direction if direction in allowed else "stop"
+
+    @staticmethod
+    def _extract_json(raw: str) -> Dict[str, Any]:
+        raw = raw.strip()
+        if not raw:
+            return {}
+        try:
+            if raw[0] == "{" and raw[-1] == "}":
+                return json.loads(raw)
+        except Exception:
+            pass
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(raw[start : end + 1])
+            except Exception:
+                return {}
+        return {}
+
+    def _build_prompt(self, user_text: str, payload: Dict[str, Any]) -> str:
+        """Build chat prompt with TinyLlama ChatML template and JSON schema."""
+        direction = payload.get("direction")
+        vision = payload.get("vision") if isinstance(payload.get("vision"), dict) else None
+        self._memory.update_robot_state(direction=direction, vision=vision)
+        system_prompt = SYSTEM_PROMPT.format(
+            robot_state=self._memory.robot_state.to_context_string(),
+            conversation_summary="This is the start of the conversation.",
+        )
+        return f"<|system|>\n{system_prompt}</s>\n<|user|>\n{user_text}</s>\n<|assistant|>\n"
 
     def _call_llama(self, prompt: str) -> tuple[str, int]:
         """Call llama-simple subprocess and get response."""
@@ -255,23 +294,21 @@ class LocalLLMRunner:
             print(f"🧠 User: {user_text[:60]}...", flush=True)
 
             # Try local LLM
-            prompt = self._build_prompt(user_text)
+            prompt = self._build_prompt(user_text, msg)
             raw_response, latency_ms = self._call_llama(prompt)
             
-            if raw_response:
-                self.logger.info("LLM response (%dms): %s", latency_ms, raw_response[:100])
-                parsed = {
-                    "speak": raw_response[:300],  # Limit length
-                    "direction": "stop",
-                    "track": "",
-                }
+            parsed = self._extract_json(raw_response) if raw_response else {}
+            if parsed:
+                parsed.setdefault("speak", raw_response[:300])
+                parsed["direction"] = self._normalize_direction(parsed.get("direction"))
+                parsed.setdefault("track", "")
                 ok = True
             else:
-                # Fallback to simple responses
-                self.logger.warning("Using fallback response (LLM timeout/error)")
+                # Fallback to simple responses if JSON is missing or empty
+                self.logger.warning("Using fallback response (LLM JSON missing)")
                 parsed = self._fallback_response(user_text)
                 ok = True
-                raw_response = parsed["speak"]
+                raw_response = parsed.get("speak", "")
 
             resp_payload = {
                 "ok": ok,

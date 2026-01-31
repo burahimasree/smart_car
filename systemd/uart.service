@@ -13,7 +13,7 @@ Environment=PROJECT_ROOT=/home/dev/smart_car
 Environment=PYTHONPATH=/home/dev/smart_car
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/dev/smart_car/.env
-ExecStart=/home/dev/smart_car/.venvs/stte/bin/python -m src.uart.bridge
+ExecStart=/home/dev/smart_car/.venvs/stte/bin/python -m src.uart.motor_bridge
 Restart=on-failure
 RestartSec=3
 StandardOutput=append:/home/dev/smart_car/logs/uart.log

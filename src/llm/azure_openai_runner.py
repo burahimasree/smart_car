@@ -34,6 +34,7 @@ from src.core.ipc import (
     publish_json,
 )
 from src.core.logging_setup import get_logger
+from src.llm.conversation_memory import ConversationMemory
 
 
 class AzureOpenAIRunner:
@@ -71,6 +72,10 @@ class AzureOpenAIRunner:
         self.sub = make_subscriber(self.config, topic=TOPIC_LLM_REQ, channel="downstream")
         self.pub = make_publisher(self.config, channel="upstream")
         self._running = True
+        self._memory = ConversationMemory(
+            max_turns=int(llm_cfg.get("memory_max_turns", 10)),
+            conversation_timeout_s=float(llm_cfg.get("conversation_timeout_s", 120.0)),
+        )
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -116,18 +121,24 @@ class AzureOpenAIRunner:
                 return {}
         return {}
 
-    def _call_azure(self, text: str) -> tuple[Dict[str, Any], str]:
+    @staticmethod
+    def _normalize_direction(value: Any) -> str:
+        allowed = {"forward", "backward", "left", "right", "stop", "scan"}
+        if not value:
+            return "stop"
+        direction = str(value).strip().lower()
+        return direction if direction in allowed else "stop"
+
+    def _build_messages(self, text: str, payload: Dict[str, Any]) -> list[Dict[str, str]]:
+        direction = payload.get("direction")
+        vision = payload.get("vision") if isinstance(payload.get("vision"), dict) else None
+        self._memory.update_robot_state(direction=direction, vision=vision)
+        return self._memory.build_messages_format(current_query=text)
+
+    def _call_azure(self, text: str, payload: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
         if not text:
             return {}, ""
-        system_prompt = (
-            "You are ROBO, a full-featured hybrid smart assistant (like Google Assistant/Alexa) "
-            "that also has a robotic car body and a camera. Respond helpfully, clearly, and interactively "
-            "to general questions and requests. Keep responses concise unless the user asks for detail."
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text[:300]},
-        ]
+        messages = self._build_messages(text, payload)
 
         try:
             resp = self.client.chat.completions.create(
@@ -162,14 +173,11 @@ class AzureOpenAIRunner:
             content = ""
 
         if not content:
-            self.logger.warning("Azure OpenAI returned empty content; retrying with plain prompt")
+            self.logger.warning("Azure OpenAI returned empty content; retrying with schema prompt")
             try:
                 resp2 = self.client.chat.completions.create(
                     model=self.deployment,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": text[:300]},
-                    ],
+                    messages=messages,
                     max_completion_tokens=160,
                     temperature=1,
                 )
@@ -215,7 +223,7 @@ class AzureOpenAIRunner:
             self.logger.info("LLM request received: %s", user_text[:160])
 
             try:
-                parsed, raw = self._call_azure(user_text)
+                parsed, raw = self._call_azure(user_text, msg)
                 ok = bool(parsed) or bool(raw.strip())
             except Exception as exc:  # noqa: BLE001
                 ok = False
@@ -225,7 +233,7 @@ class AzureOpenAIRunner:
             if not isinstance(parsed, dict):
                 parsed = {}
             parsed.setdefault("speak", raw.strip()[:300] if raw else "")
-            parsed.setdefault("direction", "stop")
+            parsed["direction"] = self._normalize_direction(parsed.get("direction"))
             parsed.setdefault("track", "")
 
             resp_payload = {
