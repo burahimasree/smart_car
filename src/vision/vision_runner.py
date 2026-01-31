@@ -184,6 +184,15 @@ def _generate_test_frame(width: int = 640, height: int = 480) -> np.ndarray:
     return frame
 
 
+def _normalize_vision_mode(raw: str | bool | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"off", "false", "0", "disabled"}:
+        return "off"
+    if value in {"on_with_stream", "with_stream", "stream"}:
+        return "on_with_stream"
+    return "on_no_stream"
+
+
 def run():
     parser = argparse.ArgumentParser(description="YOLO-based vision runner")
     parser.add_argument("--config", default="config/system.yaml")
@@ -253,7 +262,7 @@ def run():
     capture_save = False
     forced_capture_mode = False
     stream_enabled = False
-    vision_mode = str(vis_cfg.get("default_mode", "off")).lower()
+    vision_mode = _normalize_vision_mode(vis_cfg.get("default_mode", "off"))
     frame_counter = 0
     
     # Use threaded frame grabber for latest-frame pattern
@@ -351,11 +360,10 @@ def run():
                             forced_capture_mode = True
                             logger.info("Vision mode forced ON for capture request")
                     elif topic == TOPIC_CMD_VISION_MODE:
-                        mode = str(msg.get("mode", "")).lower()
-                        if mode in {"off", "on_no_stream", "on_with_stream"}:
-                            vision_mode = mode
-                            stream_enabled = (mode == "on_with_stream")
-                            logger.info("Vision mode set to %s", vision_mode)
+                        mode = _normalize_vision_mode(msg.get("mode", ""))
+                        vision_mode = mode
+                        stream_enabled = (mode == "on_with_stream")
+                        logger.info("Vision mode set to %s", vision_mode)
                 except zmq.Again:
                     pass
                 except json.JSONDecodeError as exc:
