@@ -101,6 +101,7 @@ class Orchestrator:
         self._vision_capture_requested_ts: Optional[float] = None
         self._esp_obstacle = False
         self._esp_min_distance = -1
+        self._obstacle_latched = False
 
         self._remote_session_active = False
         self._remote_last_seen = 0.0
@@ -155,6 +156,14 @@ class Orchestrator:
         logger.info("PHASE: %s -> %s (event: %s)", old_phase.name, next_phase.name, event_type)
         return True
 
+    @staticmethod
+    def _normalize_direction(direction: Optional[str]) -> str:
+        allowed = {"forward", "backward", "left", "right", "stop", "scan"}
+        if not direction:
+            return "stop"
+        value = str(direction).strip().lower()
+        return value if value in allowed else "stop"
+
     def _enter_listening(self, from_wakeword: bool = False) -> None:
         self._last_interaction_ts = time.time()
         if from_wakeword:
@@ -188,9 +197,19 @@ class Orchestrator:
     def _enter_speaking(self, text: str, direction: Optional[str] = None) -> None:
         self._publish_led_state("tts_processing")
         self._publish_display_text(f"Saying: {text[:120]}")
-        if direction:
-            self._last_nav_direction = direction
-            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "orchestrator"})
+        normalized = self._normalize_direction(direction)
+        if normalized != "stop":
+            if self._esp_obstacle and normalized == "forward":
+                logger.warning("Blocked forward command due to obstacle")
+                publish_json(
+                    self.cmd_pub,
+                    TOPIC_NAV,
+                    {"direction": "stop", "reason": "obstacle", "source": "orchestrator"},
+                )
+                self._last_nav_direction = "stop"
+            else:
+                self._last_nav_direction = normalized
+                publish_json(self.cmd_pub, TOPIC_NAV, {"direction": normalized, "source": "orchestrator"})
         publish_json(self.cmd_pub, TOPIC_TTS, {"text": text, "source": "orchestrator"})
 
     def _enter_idle(self) -> None:
@@ -304,14 +323,18 @@ class Orchestrator:
         logger.info("LLM response received")
         body = payload.get("json") or {}
         speak = body.get("speak") or payload.get("text", "")
-        direction = body.get("direction")
+        direction = self._normalize_direction(body.get("direction"))
+        if self._esp_obstacle and direction == "forward":
+            direction = "stop"
+            if speak:
+                speak = f"{speak} Obstacle ahead, stopping."
         logger.info("LLM response speak: %s", (speak or "")[:120])
         
         if speak:
             if self._transition("llm_with_speech"):
                 self._enter_speaking(speak, direction)
         else:
-            if direction:
+            if direction and direction != "stop":
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "orchestrator"})
                 self._last_nav_direction = direction
             self._transition("llm_no_speech")
@@ -336,11 +359,22 @@ class Orchestrator:
     def on_esp(self, payload: Dict[str, Any]) -> None:
         data = payload.get("data")
         if data:
-            self._esp_obstacle = bool(data.get("obstacle", False))
+            self._esp_obstacle = bool(data.get("obstacle", False)) or (data.get("is_safe") is False)
             self._esp_min_distance = int(data.get("min_distance", -1))
+            if self._esp_obstacle and not self._obstacle_latched:
+                self._obstacle_latched = True
+                logger.warning("Obstacle detected by ESP32; forcing stop")
+                publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "obstacle"})
+                self._last_nav_direction = "stop"
+                self._publish_display_text("Obstacle detected - stopping")
+            elif not self._esp_obstacle and self._obstacle_latched:
+                self._obstacle_latched = False
+                logger.info("Obstacle cleared by ESP32")
         alert = payload.get("alert")
         if alert == "COLLISION":
             logger.critical("ESP32 collision alert!")
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "collision"})
+            self._last_nav_direction = "stop"
 
     def on_health(self, payload: Dict[str, Any]) -> None:
         ok = bool(payload.get("ok", True))
