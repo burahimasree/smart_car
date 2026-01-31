@@ -45,6 +45,10 @@ htmlcov/
 *.sublime-workspace
 *.sublime-project
 
+# Android local files
+mobile_app/local.properties
+mobile_app/window_dump*.xml
+
 # OS generated files
 .DS_Store
 Thumbs.db
