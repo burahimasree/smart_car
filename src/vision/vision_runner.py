@@ -185,7 +185,11 @@ def _generate_test_frame(width: int = 640, height: int = 480) -> np.ndarray:
 
 
 def _normalize_vision_mode(raw: str | bool | None) -> str:
-    value = str(raw or "").strip().lower()
+    if raw is None:
+        return "off"
+    if isinstance(raw, bool):
+        return "off" if raw is False else "on_no_stream"
+    value = str(raw).strip().lower()
     if value in {"off", "false", "0", "disabled"}:
         return "off"
     if value in {"on_with_stream", "with_stream", "stream"}:
