@@ -41,6 +41,8 @@ from src.core.ipc import (
     TOPIC_STT,
     TOPIC_TTS,
     TOPIC_VISN,
+    TOPIC_VISN_CAPTURED,
+    TOPIC_VISN_FRAME,
     TOPIC_WW_DETECTED,
     make_publisher,
     make_subscriber,
@@ -460,6 +462,9 @@ class Orchestrator:
             if self.events_sub in socks:
                 try:
                     topic, data = self.events_sub.recv_multipart()
+                    if topic == TOPIC_VISN_FRAME:
+                        self.cmd_pub.send_multipart([topic, data])
+                        continue
                     payload = json.loads(data)
                 except Exception as exc:
                     logger.error("Recv/parse error: %s", exc)
@@ -477,6 +482,9 @@ class Orchestrator:
                     self.on_tts(payload)
                 elif topic == TOPIC_VISN:
                     self.on_vision(payload)
+                    publish_json(self.cmd_pub, TOPIC_VISN, payload)
+                elif topic == TOPIC_VISN_CAPTURED:
+                    publish_json(self.cmd_pub, TOPIC_VISN_CAPTURED, payload)
                 elif topic == TOPIC_ESP:
                     self.on_esp(payload)
                 elif topic == TOPIC_HEALTH:

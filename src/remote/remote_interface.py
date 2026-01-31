@@ -131,6 +131,9 @@ class RemoteSupervisor:
             TOPIC_DISPLAY_TEXT,
             TOPIC_CMD_VISION_MODE,
             TOPIC_CMD_PAUSE_VISION,
+            TOPIC_VISN,
+            TOPIC_VISN_FRAME,
+            TOPIC_VISN_CAPTURED,
         ]:
             self._sub_down.setsockopt(zmq.SUBSCRIBE, topic)
 
