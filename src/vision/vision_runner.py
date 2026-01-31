@@ -43,15 +43,46 @@ class LatestFrameGrabber(threading.Thread):
     stale frames (seconds old) instead of live video.
     """
     
-    def __init__(self, camera_index: int, target_fps: float = 15.0) -> None:
+    def __init__(
+        self,
+        camera_index: int,
+        target_fps: float = 15.0,
+        *,
+        use_picam2: bool = True,
+        picam_width: int = 832,
+        picam_height: int = 468,
+        picam_fps: int = 12,
+    ) -> None:
         super().__init__(daemon=True, name="FrameGrabber")
         self.camera_index = camera_index
         self.target_fps = max(1.0, target_fps)
         self.frame_interval = 1.0 / self.target_fps
-        
-        # Open camera with minimal buffering
-        self.cap = cv2.VideoCapture(camera_index)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.picam2 = None
+        self._backend = "cv2"
+        self._opened = False
+
+        if use_picam2:
+            try:
+                from picamera2 import Picamera2  # type: ignore
+                picam2 = Picamera2()
+                video_config = picam2.create_video_configuration(
+                    main={"size": (picam_width, picam_height), "format": "RGB888"},
+                    controls={"FrameRate": picam_fps},
+                )
+                picam2.configure(video_config)
+                picam2.start()
+                self.picam2 = picam2
+                self._backend = "picam2"
+                self._opened = True
+            except Exception:
+                self.picam2 = None
+
+        if not self._opened:
+            self.cap = cv2.VideoCapture(camera_index)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+            self._opened = self.cap.isOpened()
         
         # Thread-safe frame storage
         self._lock = threading.Lock()
@@ -61,7 +92,8 @@ class LatestFrameGrabber(threading.Thread):
         
         # Control
         self._stop_event = threading.Event()
-        self._opened = self.cap.isOpened()
+        if not self._opened:
+            logger.error("Camera open failed (backend=%s, index=%s)", self._backend, camera_index)
     
     def run(self) -> None:
         """Continuously capture frames, keeping only the latest."""
@@ -76,8 +108,16 @@ class LatestFrameGrabber(threading.Thread):
                 continue
             
             # Capture frame
-            ret, frame = self.cap.read()
-            if not ret or frame is None:
+            frame = None
+            if self._backend == "picam2" and self.picam2 is not None:
+                frame_rgb = self.picam2.capture_array()
+                if frame_rgb is not None:
+                    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            elif self.cap is not None:
+                ret, captured = self.cap.read()
+                if ret:
+                    frame = captured
+            if frame is None:
                 time.sleep(0.01)
                 continue
             
@@ -114,6 +154,11 @@ class LatestFrameGrabber(threading.Thread):
         self._stop_event.set()
         if self.cap:
             self.cap.release()
+        if self.picam2 is not None:
+            try:
+                self.picam2.stop()
+            except Exception:
+                pass
         self.join(timeout=2.0)
         self._opened = False
         if not self.is_alive():
@@ -273,6 +318,10 @@ def run():
     target_fps = float(vis_cfg.get("target_fps", 15.0))
     stream_fps = float(vis_cfg.get("stream_fps", target_fps))
     grabber: Optional[LatestFrameGrabber] = None
+    use_picam2 = bool(vis_cfg.get("use_picam2", True))
+    picam_width = int(vis_cfg.get("picam2_width", 832))
+    picam_height = int(vis_cfg.get("picam2_height", 468))
+    picam_fps = int(vis_cfg.get("picam2_fps", 12))
     capture_root = _coerce_path(vis_cfg.get("capture_root")) or Path("captured")
     capture_session_id = str(vis_cfg.get("capture_session_id", "")) or time.strftime("%Y%m%d_%H%M%S")
     capture_dir = capture_root / capture_session_id
@@ -282,7 +331,14 @@ def run():
         nonlocal grabber
         if grabber is not None:
             return True
-        grabber = LatestFrameGrabber(camera_index, target_fps=target_fps)
+        grabber = LatestFrameGrabber(
+            camera_index,
+            target_fps=target_fps,
+            use_picam2=use_picam2,
+            picam_width=picam_width,
+            picam_height=picam_height,
+            picam_fps=picam_fps,
+        )
         if not grabber.is_opened():
             logger.error("Cannot open camera index %s", camera_index)
             grabber = None
