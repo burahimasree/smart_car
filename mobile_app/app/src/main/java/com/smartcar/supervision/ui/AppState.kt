@@ -32,8 +32,28 @@ data class AppState(
     val lastRemoteEvent: String? = null,
     val logs: List<AppLogEntry> = emptyList(),
     val logExportResult: String? = null,
+    val backendLogs: Map<BackendLogService, BackendLogSnapshot> = emptyMap(),
+    val backendLogsUpdatedAt: Long? = null,
+    val logAutoRefresh: Boolean = true,
+    val logLinesLimit: Int = 200,
     val debugPanelVisible: Boolean = false,
     val settings: com.smartcar.supervision.data.AppSettings? = null,
+)
+
+enum class BackendLogService(val label: String, val apiName: String) {
+    APP("App", "app"),
+    REMOTE_INTERFACE("Remote Interface", "remote_interface"),
+    ORCHESTRATOR("Orchestrator", "orchestrator"),
+    UART("UART", "uart"),
+    VISION("Vision", "vision"),
+    LLM_TTS("LLM / TTS", "llm_tts"),
+}
+
+data class BackendLogSnapshot(
+    val lines: List<String> = emptyList(),
+    val sources: List<String> = emptyList(),
+    val error: String? = null,
+    val updatedAt: Long? = null,
 )
 
 enum class AppStatus {

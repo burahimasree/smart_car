@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartcar.supervision.ui.AppViewModel
 import com.smartcar.supervision.ui.screens.MainScreen
+import com.smartcar.supervision.ui.theme.SupervisionTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,8 +33,10 @@ class MainActivity : ComponentActivity() {
         }
         super.onCreate(savedInstanceState)
         setContent {
-            val vm: AppViewModel = viewModel()
-            MainScreen(viewModel = vm)
+            SupervisionTheme {
+                val vm: AppViewModel = viewModel()
+                MainScreen(viewModel = vm)
+            }
         }
     }
 }

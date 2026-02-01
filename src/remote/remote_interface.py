@@ -10,10 +10,12 @@ import json
 import time
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
 
 import zmq
 
@@ -125,6 +127,7 @@ class RemoteSupervisor:
         log_dir = Path(self.config.get("logs", {}).get("directory", "logs"))
         if not log_dir.is_absolute():
             log_dir = Path.cwd() / log_dir
+        self.log_dir = log_dir
         self.logger = get_logger("remote.interface", log_dir)
 
         remote_cfg = self.config.get("remote_interface", {}) or {}
@@ -174,6 +177,65 @@ class RemoteSupervisor:
         self._stream_lock = threading.Condition()
         self._latest_frame: Optional[bytes] = None
         self._latest_frame_ts: float = 0.0
+        self._log_services = {
+            "remote_interface": ["remote.interface.log", "remote-interface.log"],
+            "orchestrator": ["orchestrator.log"],
+            "uart": ["uart.motor_bridge.log", "uart.bridge.log", "uart.log"],
+            "vision": ["vision.log", "vision.runner.log"],
+            "llm_tts": [
+                "llm.azure_openai.log",
+                "llm.gemini.log",
+                "llm.local.log",
+                "tts.azure.log",
+                "tts.piper.log",
+                "tts.log",
+            ],
+        }
+
+    def _tail_lines(self, path: Path, max_lines: int) -> List[str]:
+        if max_lines <= 0:
+            return []
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                buffer = deque(handle, maxlen=max_lines)
+            return [line.rstrip("\n") for line in buffer]
+        except FileNotFoundError:
+            return []
+        except OSError:
+            return []
+
+    def _fetch_logs(self, service: str, max_lines: int) -> Optional[Dict[str, Any]]:
+        filenames = self._log_services.get(service)
+        if not filenames:
+            return None
+        files = []
+        for name in filenames:
+            path = self.log_dir / name
+            if path.exists():
+                files.append(path)
+        if not files:
+            return {
+                "service": service,
+                "lines": [],
+                "sources": [str(self.log_dir / name) for name in filenames],
+                "ts": int(time.time()),
+                "error": "log_files_missing",
+            }
+        merged: List[str] = []
+        sources: List[str] = []
+        for path in files:
+            sources.append(str(path))
+            lines = self._tail_lines(path, max_lines)
+            if len(files) > 1:
+                merged.extend([f"[{path.name}] {line}" for line in lines])
+            else:
+                merged.extend(lines)
+        return {
+            "service": service,
+            "lines": merged[-max_lines:],
+            "sources": sources,
+            "ts": int(time.time()),
+        }
 
     @staticmethod
     def _parse_cidrs(raw: Any) -> List[Any]:
@@ -357,7 +419,8 @@ class RemoteSupervisor:
                 if not self._allowed():
                     self._send_json(403, {"error": "forbidden"})
                     return
-                if self.path == "/stream/mjpeg":
+                parsed = urlparse(self.path)
+                if parsed.path == "/stream/mjpeg":
                     with supervisor.telemetry.lock:
                         vision_mode = supervisor.telemetry.vision_mode
                     if vision_mode != "on_with_stream":
@@ -390,13 +453,30 @@ class RemoteSupervisor:
                     except Exception as exc:  # pragma: no cover - defensive
                         supervisor.logger.info("Stream closed: %s", exc)
                     return
-                if self.path in {"/status", "/telemetry"}:
+                if parsed.path in {"/status", "/telemetry"}:
                     supervisor._touch_session()
                     supervisor._publish_session_state()
                     self._send_json(200, supervisor.telemetry.snapshot())
                     return
-                if self.path == "/health":
+                if parsed.path == "/health":
                     self._send_json(200, {"ok": True, "timestamp": int(time.time())})
+                    return
+                if parsed.path == "/logs":
+                    qs = parse_qs(parsed.query or "")
+                    service = (qs.get("service") or qs.get("name") or [None])[0]
+                    try:
+                        requested = int((qs.get("lines") or ["100"])[0])
+                    except ValueError:
+                        requested = 100
+                    max_lines = max(10, min(500, requested))
+                    if not service:
+                        self._send_json(200, {"services": list(supervisor._log_services.keys())})
+                        return
+                    payload = supervisor._fetch_logs(str(service), max_lines)
+                    if payload is None:
+                        self._send_json(404, {"error": "unknown_service"})
+                        return
+                    self._send_json(200, payload)
                     return
                 log = getattr(supervisor, "logger", None)
                 if log:

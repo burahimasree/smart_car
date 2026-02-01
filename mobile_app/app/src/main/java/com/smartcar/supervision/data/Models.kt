@@ -13,9 +13,12 @@ data class TelemetrySnapshot(
     val vision_active: Boolean? = null,
     val vision_paused: Boolean? = null,
     val motor_enabled: Boolean? = null,
+    val motor: MotorState? = null,
     val safety_stop: Boolean? = null,
     val safety_alert: String? = null,
     val sensor: SensorData? = null,
+    val sensor_ts: Long? = null,
+    val sensor_buffer: List<SensorData>? = null,
     val vision_last_detection: VisionDetection? = null,
     val detection_history: List<VisionDetection>? = null,
     val last_llm_response: String? = null,
@@ -33,10 +36,19 @@ data class SensorData(
     val s2: Int? = null,
     val s3: Int? = null,
     val mq2: Int? = null,
+    val lmotor: Int? = null,
+    val rmotor: Int? = null,
     val min_distance: Int? = null,
     val obstacle: Boolean? = null,
     val warning: Boolean? = null,
     val is_safe: Boolean? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class MotorState(
+    val left: Int? = null,
+    val right: Int? = null,
+    val ts: Long? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -61,4 +73,13 @@ data class RemoteEvent(
     val intent: String? = null,
     val direction: String? = null,
     val timestamp: Long? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class LogLinesResponse(
+    val service: String? = null,
+    val lines: List<String>? = null,
+    val sources: List<String>? = null,
+    val ts: Long? = null,
+    val error: String? = null,
 )

@@ -62,6 +62,7 @@ import okhttp3.Request
 import com.smartcar.supervision.BuildConfig
 import com.smartcar.supervision.data.AppSettings
 import com.smartcar.supervision.ui.AppStatus
+import com.smartcar.supervision.ui.BackendLogService
 import com.smartcar.supervision.ui.AppViewModel
 import com.smartcar.supervision.ui.ConnectionStatus
 import com.smartcar.supervision.ui.LogCategory
@@ -72,11 +73,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private enum class MainTab(val label: String) {
-    DASHBOARD("Dashboard"),
-    VISION("Vision"),
-    TELEMETRY("Telemetry"),
-    LOGS("Logs"),
-    SETTINGS("Settings"),
+    HOME("HOME"),
+    CONTROL("CTRL"),
+    VISION("VSN"),
+    SENSORS("SNS"),
+    LOGS("LOGS"),
+    SETTINGS("SET"),
 }
 
 @Composable
@@ -84,7 +86,7 @@ private enum class MainTab(val label: String) {
 fun MainScreen(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var selectedTab by rememberSaveable { mutableStateOf(MainTab.DASHBOARD) }
+    var selectedTab by rememberSaveable { mutableStateOf(MainTab.HOME) }
 
     LaunchedEffect(Unit) {
         viewModel.bindContext(context)
@@ -112,10 +114,16 @@ fun MainScreen(viewModel: AppViewModel) {
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = selectedTab == MainTab.DASHBOARD,
-                    onClick = { selectedTab = MainTab.DASHBOARD },
+                    selected = selectedTab == MainTab.HOME,
+                    onClick = { selectedTab = MainTab.HOME },
                     icon = { Icon(Icons.Filled.Info, contentDescription = null) },
-                    label = { Text(MainTab.DASHBOARD.label) },
+                    label = { Text(MainTab.HOME.label) },
+                )
+                NavigationBarItem(
+                    selected = selectedTab == MainTab.CONTROL,
+                    onClick = { selectedTab = MainTab.CONTROL },
+                    icon = { Icon(Icons.Filled.Tune, contentDescription = null) },
+                    label = { Text(MainTab.CONTROL.label) },
                 )
                 NavigationBarItem(
                     selected = selectedTab == MainTab.VISION,
@@ -124,10 +132,10 @@ fun MainScreen(viewModel: AppViewModel) {
                     label = { Text(MainTab.VISION.label) },
                 )
                 NavigationBarItem(
-                    selected = selectedTab == MainTab.TELEMETRY,
-                    onClick = { selectedTab = MainTab.TELEMETRY },
+                    selected = selectedTab == MainTab.SENSORS,
+                    onClick = { selectedTab = MainTab.SENSORS },
                     icon = { Icon(Icons.Filled.Tune, contentDescription = null) },
-                    label = { Text(MainTab.TELEMETRY.label) },
+                    label = { Text(MainTab.SENSORS.label) },
                 )
                 NavigationBarItem(
                     selected = selectedTab == MainTab.LOGS,
@@ -149,15 +157,20 @@ fun MainScreen(viewModel: AppViewModel) {
             .padding(innerPadding)
 
         when (selectedTab) {
-            MainTab.DASHBOARD -> DashboardScreen(
+            MainTab.HOME -> HomeScreen(
                 modifier = contentModifier,
                 viewModel = viewModel,
                 onOpenSettings = { selectedTab = MainTab.SETTINGS },
             )
-            MainTab.TELEMETRY -> TelemetryScreen(
+            MainTab.CONTROL -> ControlScreen(
                 modifier = contentModifier,
                 viewModel = viewModel,
+                onOpenStatus = { selectedTab = MainTab.HOME },
                 onOpenSettings = { selectedTab = MainTab.SETTINGS },
+            )
+            MainTab.SENSORS -> SensorsScreen(
+                modifier = contentModifier,
+                viewModel = viewModel,
             )
             MainTab.VISION -> VisionScreen(
                 modifier = contentModifier,
@@ -177,7 +190,7 @@ fun MainScreen(viewModel: AppViewModel) {
 }
 
 @Composable
-private fun DashboardScreen(
+private fun HomeScreen(
     modifier: Modifier,
     viewModel: AppViewModel,
     onOpenSettings: () -> Unit,
@@ -185,23 +198,12 @@ private fun DashboardScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val now = System.currentTimeMillis()
     val sessionActive = (state.telemetry?.remote_session_active == true) || (state.status?.remote_session_active == true)
-    val intentsEnabled = state.appStatus == AppStatus.ONLINE_IDLE
-    val stopEnabled = sessionActive
-    val busy = state.intentInFlight || state.task.phase == TaskPhase.EXECUTING
     val lastIntentAge = state.lastIntentAt?.let { now - it }
     val commandRecent = lastIntentAge != null && lastIntentAge < 5_000
-    val lastIntentLabel = state.lastIntentSent ?: "none"
-    val hasFailure = state.connection is ConnectionStatus.Error || !sessionActive ||
-        state.lastIntentResult?.startsWith("rejected") == true ||
-        state.lastIntentResult?.startsWith("timed_out") == true ||
-        state.lastIntentResult?.startsWith("failed") == true
-    var confirmScan by rememberSaveable { mutableStateOf(false) }
-    var confirmStop by rememberSaveable { mutableStateOf(false) }
-    var confirmStartForward by rememberSaveable { mutableStateOf(false) }
-    var actionBlockedReason by rememberSaveable { mutableStateOf<String?>(null) }
-    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
-    var showLimitations by rememberSaveable { mutableStateOf(false) }
-    var customMessage by rememberSaveable { mutableStateOf("") }
+    val lastIntentLabel = state.lastIntentSent ?: "UNAVAILABLE"
+    val motor = state.telemetry?.motor
+    val motorActive = motor?.let { it.left != 0 || it.right != 0 } ?: false
+    val safety = state.telemetry?.sensor
 
     Column(
         modifier = modifier
@@ -221,13 +223,13 @@ private fun DashboardScreen(
                 }
                 Text(statusLabel, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Connection: " + when (val c = state.connection) {
+                    "Connection: " + when (state.connection) {
                         ConnectionStatus.Online -> "ONLINE"
                         ConnectionStatus.Offline -> "OFFLINE"
                         is ConnectionStatus.Error -> "ERROR"
                     }
                 )
-                Text("Blocking: ${state.blockingReason ?: "none"}")
+                Text("Blocking: ${state.blockingReason ?: "UNAVAILABLE"}")
                 Text("Remote session: ${triState(sessionActive)}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { viewModel.refreshNow() }) { Text("Retry now") }
@@ -237,348 +239,47 @@ private fun DashboardScreen(
         }
 
         Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Motion Control", style = MaterialTheme.typography.titleMedium)
-                Text("Controls require an active remote session")
-                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("start_forward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                            if (intentsEnabled) {
-                                confirmStartForward = true
-                            } else {
-                                actionBlockedReason = state.blockingReason ?: "invalid_state"
-                            }
-                        },
-                        enabled = intentsEnabled,
-                    ) {
-                        Text("Forward")
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.SpaceBetween) {
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("rotate_left", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                            viewModel.sendIntent("rotate_left")
-                        },
-                        enabled = intentsEnabled,
-                    ) {
-                        Text("Left")
-                    }
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("stop", stopEnabled, if (stopEnabled) null else state.blockingReason)
-                            if (stopEnabled) {
-                                confirmStop = true
-                            } else {
-                                actionBlockedReason = state.blockingReason ?: "invalid_state"
-                            }
-                        },
-                        enabled = stopEnabled,
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        )
-                    ) {
-                        Text("STOP")
-                    }
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("rotate_right", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                            viewModel.sendIntent("rotate_right")
-                        },
-                        enabled = intentsEnabled,
-                    ) {
-                        Text("Right")
-                    }
-                }
-                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("move_backward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                            viewModel.sendIntent("move_backward")
-                        },
-                        enabled = intentsEnabled,
-                    ) {
-                        Text("Backward")
-                    }
-                }
-                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
-                    Button(
-                        onClick = {
-                            viewModel.logUiAction("scan", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                            if (intentsEnabled) {
-                                confirmScan = true
-                            } else {
-                                actionBlockedReason = state.blockingReason ?: "invalid_state"
-                            }
-                        },
-                        enabled = intentsEnabled,
-                    ) {
-                        Text("Scan")
-                    }
-                }
-
-                if (!intentsEnabled) {
-                    Text("Controls disabled: ${state.blockingReason ?: "invalid_state"}")
-                }
-                if (!stopEnabled) {
-                    Text("Stop disabled: ${state.blockingReason ?: "invalid_state"}")
-                }
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("System snapshot", style = MaterialTheme.typography.titleMedium)
+                Text("Task: ${state.task.label.ifBlank { "UNAVAILABLE" }}")
+                Text("Last command: $lastIntentLabel")
+                Text("Last result: ${state.lastIntentResult ?: "UNAVAILABLE"}")
                 if (commandRecent) {
-                    Text("Command sent: $lastIntentLabel @ ${formatTimestamp(state.lastIntentAt)}")
-                } else {
-                    Text("Last command: $lastIntentLabel")
-                    Text("Last result: ${state.lastIntentResult ?: "unknown"}")
+                    Text("Command sent @ ${formatTimestamp(state.lastIntentAt)}")
                 }
+                Text("Motor active: ${triState(motorActive)}")
+                Text("Vision mode: ${confidenceLabel(state.telemetry?.vision_mode, state.lastTelemetryAt)}")
             }
         }
 
         Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Vision Control", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        viewModel.logUiAction("enable_vision", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                        viewModel.sendIntent("enable_vision")
-                    }, enabled = intentsEnabled) { Text("Vision ON") }
-                    Button(onClick = {
-                        viewModel.logUiAction("disable_vision", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                        viewModel.sendIntent("disable_vision")
-                    }, enabled = intentsEnabled) { Text("Vision OFF") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        viewModel.logUiAction("enable_stream", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                        viewModel.sendIntent("enable_stream")
-                    }, enabled = intentsEnabled) { Text("Stream ON") }
-                    Button(onClick = {
-                        viewModel.logUiAction("disable_stream", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                        viewModel.sendIntent("disable_stream")
-                    }, enabled = intentsEnabled) { Text("Stream OFF") }
-                }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Assistant Control", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = {
-                    viewModel.logUiAction("invoke_assistant", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("invoke_assistant")
-                }, enabled = intentsEnabled) {
-                    Text("Invoke Assistant")
-                }
-                OutlinedTextField(
-                    value = customMessage,
-                    onValueChange = { customMessage = it },
-                    label = { Text("Custom message") },
-                    singleLine = false,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(onClick = {
-                    viewModel.logUiAction("assistant_text", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("assistant_text", mapOf("text" to customMessage.trim()))
-                    customMessage = ""
-                }, enabled = intentsEnabled && customMessage.isNotBlank()) {
-                    Text("Send to Assistant")
-                }
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Safety", style = MaterialTheme.typography.titleMedium)
+                Text("Is safe: ${confidenceLabel(safety?.is_safe, state.telemetry?.sensor_ts)}")
+                Text("Obstacle: ${confidenceLabel(safety?.obstacle, state.telemetry?.sensor_ts)}")
+                Text("Warning: ${confidenceLabel(safety?.warning, state.telemetry?.sensor_ts)}")
+                Text("Sensor buffer: ${state.telemetry?.sensor_buffer ?: "UNAVAILABLE"}")
             }
         }
 
         Card {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Quick indicators", style = MaterialTheme.typography.titleMedium)
-                val llm = state.telemetry?.last_llm_response ?: "unknown"
-                val tts = state.telemetry?.last_tts_text ?: "unknown"
-                val ttsStatus = state.telemetry?.last_tts_status ?: "unknown"
+                val llm = state.telemetry?.last_llm_response ?: "UNAVAILABLE"
+                val tts = state.telemetry?.last_tts_text ?: "UNAVAILABLE"
+                val ttsStatus = state.telemetry?.last_tts_status ?: "UNAVAILABLE"
                 val det = state.telemetry?.vision_last_detection
                 Text("Last LLM response: ${confidenceLabel(llm, state.telemetry?.last_llm_ts)}")
                 Text("Last TTS: ${confidenceLabel(tts, state.telemetry?.last_tts_ts)}")
                 Text("TTS status: $ttsStatus")
                 if (det == null) {
-                    Text("Last detection: none")
+                    Text("Last detection: UNAVAILABLE")
                 } else {
-                    Text("Last detection: ${det.label ?: "unknown"} conf=${det.confidence ?: "?"}")
-                }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Task Flow", style = MaterialTheme.typography.titleMedium)
-                Text("Task: ${state.task.type}")
-                Text("Phase: ${state.task.phase}")
-                Text("Status: ${state.task.label}")
-                Button(
-                    onClick = {
-                        viewModel.logUiAction("start_scan_observe_stop", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                        if (intentsEnabled) {
-                            confirmScan = true
-                        } else {
-                            actionBlockedReason = state.blockingReason ?: "invalid_state"
-                        }
-                    },
-                    enabled = intentsEnabled
-                ) { Text("Start scan → observe → stop") }
-                Button(
-                    onClick = {
-                        val allowed = intentsEnabled && state.task.phase == TaskPhase.OBSERVE
-                        viewModel.logUiAction("mark_observe", allowed, if (allowed) null else state.blockingReason)
-                        if (allowed) {
-                            viewModel.markObservation()
-                        } else {
-                            actionBlockedReason = state.blockingReason ?: "invalid_state"
-                        }
-                    },
-                    enabled = intentsEnabled && state.task.phase == TaskPhase.OBSERVE
-                ) { Text("Mark observe") }
-                Button(
-                    onClick = {
-                        val allowed = stopEnabled && state.task.type != TaskType.NONE
-                        viewModel.logUiAction("stop_task", allowed, if (allowed) null else state.blockingReason)
-                        if (allowed) {
-                            confirmStop = true
-                        } else {
-                            actionBlockedReason = state.blockingReason ?: "invalid_state"
-                        }
-                    },
-                    enabled = stopEnabled && state.task.type != TaskType.NONE
-                ) { Text("Stop task") }
-                Button(
-                    onClick = {
-                        val allowed = !state.intentInFlight && state.task.type != TaskType.NONE
-                        viewModel.logUiAction("clear_task", allowed, if (allowed) null else state.blockingReason)
-                        if (allowed) {
-                            viewModel.clearTask()
-                        } else {
-                            actionBlockedReason = state.blockingReason ?: "invalid_state"
-                        }
-                    },
-                    enabled = !state.intentInFlight && state.task.type != TaskType.NONE
-                ) { Text("Clear task") }
-            }
-        }
-
-        if (hasFailure) {
-            Card {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Failure surface", style = MaterialTheme.typography.titleMedium)
-                    if (state.connection is ConnectionStatus.Error) {
-                        Text("Network failure: ${(state.connection as ConnectionStatus.Error).message}")
-                    }
-                    if (!sessionActive) {
-                        Text("Session loss: remote session inactive")
-                    }
-                    if (state.lastIntentResult?.startsWith("rejected") == true) {
-                        Text("Intent rejected: ${state.lastIntentResult}")
-                    }
-                    if (state.lastIntentResult?.startsWith("timed_out") == true) {
-                        Text("Intent timeout: ${state.lastIntentResult}")
-                    }
-                    if (state.lastIntentResult?.startsWith("failed") == true) {
-                        Text("Intent failure: ${state.lastIntentResult}")
-                    }
-                }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = { showDiagnostics = !showDiagnostics }) {
-                    Text(if (showDiagnostics) "Hide diagnostics" else "Show diagnostics")
-                }
-                if (showDiagnostics) {
-                    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
-                    Text("App version: ${BuildConfig.VERSION_NAME}")
-                    Text("Robot base URL: ${state.settings?.baseUrl() ?: BuildConfig.ROBOT_BASE_URL}")
-                    Text("Last status: ${formatTimestamp(state.lastStatusAt)}")
-                    Text("Last telemetry: ${formatTimestamp(state.lastTelemetryAt)}")
-                    Text("Last intent: ${state.lastIntentSent ?: "unknown"}")
-                    Text("Last intent result: ${state.lastIntentResult ?: "unknown"}")
-                }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = { showLimitations = !showLimitations }) {
-                    Text(if (showLimitations) "Hide known limitations" else "Show known limitations")
-                }
-                if (showLimitations) {
-                    Text("Known limitations", style = MaterialTheme.typography.titleMedium)
-                    Text("- No auto-retry for intents")
-                    Text("- Telemetry may be stale or missing fields")
-                    Text("- Streaming depends on backend-provided URL and format")
+                    Text("Last detection: ${det.label ?: "UNAVAILABLE"} conf=${det.confidence ?: "?"}")
                 }
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
-    }
-
-    if (actionBlockedReason != null) {
-        AlertDialog(
-            onDismissRequest = { actionBlockedReason = null },
-            title = { Text("Action blocked") },
-            text = { Text("Reason: ${actionBlockedReason}") },
-            confirmButton = {
-                TextButton(onClick = { actionBlockedReason = null }) { Text("OK") }
-            }
-        )
-    }
-
-    if (confirmScan) {
-        AlertDialog(
-            onDismissRequest = { confirmScan = false },
-            title = { Text("Confirm scan") },
-            text = { Text("Send scan intent to the robot?") },
-            confirmButton = {
-                Button(onClick = {
-                    confirmScan = false
-                    viewModel.logUiAction("confirm_scan", true, null)
-                    viewModel.startScanObserveTask()
-                }) { Text("Confirm") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmScan = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    if (confirmStop) {
-        AlertDialog(
-            onDismissRequest = { confirmStop = false },
-            title = { Text("Confirm stop") },
-            text = { Text("Send stop intent to the robot?") },
-            confirmButton = {
-                Button(onClick = {
-                    confirmStop = false
-                    viewModel.logUiAction("confirm_stop", true, null)
-                    viewModel.stopTask()
-                }) { Text("Confirm") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmStop = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    if (confirmStartForward) {
-        AlertDialog(
-            onDismissRequest = { confirmStartForward = false },
-            title = { Text("Confirm forward") },
-            text = { Text("Send start forward intent to the robot?") },
-            confirmButton = {
-                Button(onClick = {
-                    confirmStartForward = false
-                    viewModel.logUiAction("confirm_start_forward", true, null)
-                    viewModel.sendIntent("start")
-                }) { Text("Confirm") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmStartForward = false }) { Text("Cancel") }
-            }
-        )
     }
 }
 
@@ -591,12 +292,20 @@ private fun ControlScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val intentsEnabled = state.appStatus == AppStatus.ONLINE_IDLE
-    val stopEnabled = state.appStatus == AppStatus.ONLINE_EXECUTING_TASK || state.appStatus == AppStatus.ONLINE_BUSY
     val sessionActive = (state.telemetry?.remote_session_active == true) || (state.status?.remote_session_active == true)
+    val stopEnabled = sessionActive
+    val lastIntentAge = state.lastIntentAt?.let { System.currentTimeMillis() - it }
+    val commandRecent = lastIntentAge != null && lastIntentAge < 5_000
+    val lastIntentLabel = state.lastIntentSent ?: "UNAVAILABLE"
+    val hasFailure = state.connection is ConnectionStatus.Error || !sessionActive ||
+        state.lastIntentResult?.startsWith("rejected") == true ||
+        state.lastIntentResult?.startsWith("timed_out") == true ||
+        state.lastIntentResult?.startsWith("failed") == true
     var confirmScan by rememberSaveable { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
     var confirmStartForward by rememberSaveable { mutableStateOf(false) }
     var actionBlockedReason by rememberSaveable { mutableStateOf<String?>(null) }
+    var customMessage by rememberSaveable { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -687,49 +396,141 @@ private fun ControlScreen(
         }
 
         Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Intent", style = MaterialTheme.typography.titleMedium)
-                if (!intentsEnabled) {
-                    Text("Intents disabled: offline, no remote session, or busy")
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Motion Control", style = MaterialTheme.typography.titleMedium)
+                Text("Controls require an active remote session")
+                Button(
+                    onClick = {
+                        viewModel.logUiAction("stop", stopEnabled, if (stopEnabled) null else state.blockingReason)
+                        if (stopEnabled) {
+                            confirmStop = true
+                        } else {
+                            actionBlockedReason = state.blockingReason ?: "invalid_state"
+                        }
+                    },
+                    enabled = stopEnabled,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    )
+                ) { Text("STOP") }
+
+                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
+                    Button(
+                        onClick = {
+                            viewModel.logUiAction("start_forward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                            if (intentsEnabled) {
+                                confirmStartForward = true
+                            } else {
+                                actionBlockedReason = state.blockingReason ?: "invalid_state"
+                            }
+                        },
+                        enabled = intentsEnabled,
+                    ) {
+                        Text("Forward")
+                    }
                 }
+                Row(horizontalArrangement = Arrangement.SpaceBetween) {
+                    Button(
+                        onClick = {
+                            viewModel.logUiAction("rotate_left", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                            viewModel.sendIntent("rotate_left")
+                        },
+                        enabled = intentsEnabled,
+                    ) { Text("Left") }
+                    Button(
+                        onClick = {
+                            viewModel.logUiAction("rotate_right", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                            viewModel.sendIntent("rotate_right")
+                        },
+                        enabled = intentsEnabled,
+                    ) { Text("Right") }
+                }
+                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
+                    Button(
+                        onClick = {
+                            viewModel.logUiAction("move_backward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                            viewModel.sendIntent("move_backward")
+                        },
+                        enabled = intentsEnabled,
+                    ) { Text("Backward") }
+                }
+                Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
+                    Button(
+                        onClick = {
+                            viewModel.logUiAction("scan", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                            if (intentsEnabled) {
+                                confirmScan = true
+                            } else {
+                                actionBlockedReason = state.blockingReason ?: "invalid_state"
+                            }
+                        },
+                        enabled = intentsEnabled,
+                    ) { Text("Scan") }
+                }
+
+                if (!intentsEnabled) {
+                    Text("Controls disabled: ${state.blockingReason ?: "invalid_state"}")
+                }
+                if (!stopEnabled) {
+                    Text("Stop disabled: ${state.blockingReason ?: "invalid_state"}")
+                }
+                if (commandRecent) {
+                    Text("Command sent: $lastIntentLabel @ ${formatTimestamp(state.lastIntentAt)}")
+                } else {
+                    Text("Last command: $lastIntentLabel")
+                    Text("Last result: ${state.lastIntentResult ?: "UNAVAILABLE"}")
+                }
+            }
+        }
+
+        Card {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Assistant Control", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = {
-                    viewModel.logUiAction("enable_vision", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("enable_vision")
-                }, enabled = intentsEnabled) { Text("Enable vision") }
+                    viewModel.logUiAction("invoke_assistant", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                    viewModel.sendIntent("invoke_assistant")
+                }, enabled = intentsEnabled) {
+                    Text("Invoke Assistant")
+                }
+                OutlinedTextField(
+                    value = customMessage,
+                    onValueChange = { customMessage = it },
+                    label = { Text("Custom message") },
+                    singleLine = false,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Button(onClick = {
-                    viewModel.logUiAction("disable_vision", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("disable_vision")
-                }, enabled = intentsEnabled) { Text("Disable vision") }
-                Button(onClick = {
-                    viewModel.logUiAction("enable_stream", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("enable_stream")
-                }, enabled = intentsEnabled) { Text("Enable stream") }
-                Button(onClick = {
-                    viewModel.logUiAction("disable_stream", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("disable_stream")
-                }, enabled = intentsEnabled) { Text("Disable stream") }
-                HorizontalDivider()
-                Button(onClick = {
-                    viewModel.logUiAction("scan", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    confirmScan = true
-                }, enabled = intentsEnabled) { Text("Scan") }
-                Button(onClick = {
-                    viewModel.logUiAction("stop", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    confirmStop = true
-                }, enabled = intentsEnabled) { Text("Stop") }
-                Button(onClick = {
-                    viewModel.logUiAction("rotate_left", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("rotate_left")
-                }, enabled = intentsEnabled) { Text("Rotate left") }
-                Button(onClick = {
-                    viewModel.logUiAction("rotate_right", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    viewModel.sendIntent("rotate_right")
-                }, enabled = intentsEnabled) { Text("Rotate right") }
-                Button(onClick = {
-                    viewModel.logUiAction("start_forward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                    confirmStartForward = true
-                }, enabled = intentsEnabled) { Text("Start forward") }
-                Text("Last intent result: ${state.lastIntentResult ?: ""}")
+                    viewModel.logUiAction("assistant_text", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
+                    viewModel.sendIntent("assistant_text", mapOf("text" to customMessage.trim()))
+                    customMessage = ""
+                }, enabled = intentsEnabled && customMessage.isNotBlank()) {
+                    Text("Send to Assistant")
+                }
+            }
+        }
+
+        if (hasFailure) {
+            Card {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Failure surface", style = MaterialTheme.typography.titleMedium)
+                    if (state.connection is ConnectionStatus.Error) {
+                        Text("Network failure: ${(state.connection as ConnectionStatus.Error).message}")
+                    }
+                    if (!sessionActive) {
+                        Text("Session loss: remote session inactive")
+                    }
+                    if (state.lastIntentResult?.startsWith("rejected") == true) {
+                        Text("Intent rejected: ${state.lastIntentResult}")
+                    }
+                    if (state.lastIntentResult?.startsWith("timed_out") == true) {
+                        Text("Intent timeout: ${state.lastIntentResult}")
+                    }
+                    if (state.lastIntentResult?.startsWith("failed") == true) {
+                        Text("Intent failure: ${state.lastIntentResult}")
+                    }
+                }
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
@@ -912,47 +713,6 @@ private fun VisionScreen(
                     }
                 }
 
-                if (isStreaming) {
-                    HorizontalDivider()
-                    Text("Control pad", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.SpaceBetween) {
-                        Button(
-                            onClick = {
-                                viewModel.logUiAction("rotate_left", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                                viewModel.sendIntent("rotate_left")
-                            },
-                            enabled = intentsEnabled,
-                        ) { Text("Left") }
-                        Button(
-                            onClick = {
-                                viewModel.logUiAction("stop", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                                viewModel.stopTask()
-                            },
-                            enabled = intentsEnabled,
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError,
-                            )
-                        ) { Text("STOP") }
-                        Button(
-                            onClick = {
-                                viewModel.logUiAction("rotate_right", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                                viewModel.sendIntent("rotate_right")
-                            },
-                            enabled = intentsEnabled,
-                        ) { Text("Right") }
-                    }
-                    Row(horizontalArrangement = Arrangement.Center) {
-                        Button(
-                            onClick = {
-                                viewModel.logUiAction("start_forward", intentsEnabled, if (intentsEnabled) null else state.blockingReason)
-                                viewModel.sendIntent("start")
-                            },
-                            enabled = intentsEnabled,
-                        ) { Text("Forward") }
-                    }
-                }
-
                 HorizontalDivider()
                 Text("Vision metadata overlay", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { overlayEnabled = !overlayEnabled }) {
@@ -1014,10 +774,9 @@ private fun VisionScreen(
 }
 
 @Composable
-private fun TelemetryScreen(
+private fun SensorsScreen(
     modifier: Modifier,
     viewModel: AppViewModel,
-    onOpenSettings: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sessionActive = (state.telemetry?.remote_session_active == true) || (state.status?.remote_session_active == true)
@@ -1036,14 +795,26 @@ private fun TelemetryScreen(
                 Text("Status display: ${confidenceLabel(state.status?.display_text, state.lastStatusAt)}")
                 Text("Telemetry mode: ${confidenceLabel(state.telemetry?.mode, state.lastTelemetryAt)}")
                 Text("Telemetry display: ${confidenceLabel(state.telemetry?.display_text, state.lastTelemetryAt)}")
-                TextButton(onClick = onOpenSettings) { Text("Open settings") }
             }
         }
 
         Card {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Motor state", style = MaterialTheme.typography.titleMedium)
+                Text("Sensor health", style = MaterialTheme.typography.titleMedium)
+                Text("Sensor timestamp: ${confidenceLabel(state.telemetry?.sensor_ts, state.lastTelemetryAt)}")
+                Text("Buffer size: ${state.telemetry?.sensor_buffer ?: "unknown"}")
+                Text("Safety stop: ${confidenceLabel(state.telemetry?.safety_stop, state.lastTelemetryAt)}")
+                Text("Blocking: ${state.blockingReason ?: "none"}")
+            }
+        }
+
+        Card {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Motor feedback", style = MaterialTheme.typography.titleMedium)
+                val motor = state.telemetry?.motor
                 Text("Motor enabled: ${confidenceLabel(state.telemetry?.motor_enabled, state.lastTelemetryAt)}")
+                Text("Left motor: ${confidenceLabel(motor?.left, state.lastTelemetryAt)}")
+                Text("Right motor: ${confidenceLabel(motor?.right, state.lastTelemetryAt)}")
                 Text("Intent busy: ${triState(state.intentInFlight)}")
                 Text("Last intent: ${state.lastIntentSent ?: "unknown"}")
                 Text("Last intent result: ${state.lastIntentResult ?: "unknown"}")
@@ -1052,30 +823,12 @@ private fun TelemetryScreen(
 
         Card {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Safety flags", style = MaterialTheme.typography.titleMedium)
-                Text("Safety stop: ${confidenceLabel(state.telemetry?.safety_stop, state.lastTelemetryAt)}")
-                Text("Blocking: ${state.blockingReason ?: "none"}")
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Vision state", style = MaterialTheme.typography.titleMedium)
-                Text("Vision mode: ${confidenceLabel(state.telemetry?.vision_mode, state.lastTelemetryAt)}")
-                Text("Stream URL: ${confidenceLabel(state.telemetry?.stream_url ?: state.status?.stream_url, state.lastTelemetryAt)}")
-                val det = state.telemetry?.vision_last_detection
-                if (det == null) {
-                    Text("Last detection: none")
-                } else {
-                    Text("Last detection: ${det.label ?: "unknown"} conf=${det.confidence ?: "?"}")
-                }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Sensor values", style = MaterialTheme.typography.titleMedium)
-                Text(state.telemetry?.toString() ?: "telemetry_missing")
+                val sensor = state.telemetry?.sensor
+                Text("Is safe: ${confidenceLabel(sensor?.is_safe, state.telemetry?.sensor_ts)}")
+                Text("Obstacle: ${confidenceLabel(sensor?.obstacle, state.telemetry?.sensor_ts)}")
+                Text("Warning: ${confidenceLabel(sensor?.warning, state.telemetry?.sensor_ts)}")
+                Text("Raw telemetry: ${state.telemetry?.toString() ?: "telemetry_missing"}")
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
@@ -1093,6 +846,17 @@ private fun LogsScreen(
     var showNetwork by rememberSaveable { mutableStateOf(true) }
     var showIntent by rememberSaveable { mutableStateOf(true) }
     var showState by rememberSaveable { mutableStateOf(true) }
+    val backendServices = listOf(
+        BackendLogService.APP,
+        BackendLogService.REMOTE_INTERFACE,
+        BackendLogService.ORCHESTRATOR,
+        BackendLogService.UART,
+        BackendLogService.VISION,
+        BackendLogService.LLM_TTS,
+    )
+    var selectedServices by remember {
+        mutableStateOf(backendServices.associateWith { true })
+    }
     val scrollState = rememberScrollState()
 
     val filtered = state.logs.filter { entry ->
@@ -1128,6 +892,67 @@ private fun LogsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Card {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Backend logs", style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Auto refresh")
+                    Switch(
+                        checked = state.logAutoRefresh,
+                        onCheckedChange = { viewModel.setLogAutoRefresh(it) }
+                    )
+                    Text("Lines: ${state.logLinesLimit}")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.refreshBackendLogs() }) { Text("Refresh now") }
+                    Text("Updated: ${formatTimestamp(state.backendLogsUpdatedAt)}")
+                }
+                backendServices.forEach { service ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(service.label)
+                        Switch(
+                            checked = selectedServices[service] == true,
+                            onCheckedChange = { enabled ->
+                                selectedServices = selectedServices.toMutableMap().also { it[service] = enabled }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        backendServices.filter { selectedServices[it] == true }.forEach { service ->
+            val snapshot = state.backendLogs[service]
+            val appLogLines = filtered.takeLast(200).map { it.toDisplayLine() }
+            Card {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(service.label, style = MaterialTheme.typography.titleMedium)
+                    if (service == BackendLogService.APP) {
+                        if (appLogLines.isEmpty()) {
+                            Text("No app logs")
+                        } else {
+                            appLogLines.forEach { line ->
+                                Text(line, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    } else if (snapshot == null) {
+                        Text("No data yet")
+                    } else {
+                        if (!snapshot.error.isNullOrBlank()) {
+                            Text("Error: ${snapshot.error}")
+                        }
+                        if (snapshot.lines.isEmpty()) {
+                            Text("No log lines")
+                        } else {
+                            snapshot.lines.takeLast(200).forEach { line ->
+                                Text(line, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Card {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Log controls", style = MaterialTheme.typography.titleMedium)
@@ -1205,6 +1030,8 @@ private fun SettingsScreen(
     var pollMs by rememberSaveable { mutableStateOf(state.settings?.pollIntervalMs?.toString() ?: "1000") }
     var debugEnabled by rememberSaveable { mutableStateOf(state.settings?.debugEnabled ?: false) }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    var showLimitations by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.settings) {
         val settings = state.settings
@@ -1281,6 +1108,30 @@ private fun SettingsScreen(
                 Button(onClick = { viewModel.exportLogs(context) }) {
                     Text("Export logs")
                 }
+                TextButton(onClick = { showDiagnostics = !showDiagnostics }) {
+                    Text(if (showDiagnostics) "Hide runtime details" else "Show runtime details")
+                }
+                if (showDiagnostics) {
+                    Text("Robot base URL: ${state.settings?.baseUrl() ?: BuildConfig.ROBOT_BASE_URL}")
+                    Text("Last status: ${formatTimestamp(state.lastStatusAt)}")
+                    Text("Last telemetry: ${formatTimestamp(state.lastTelemetryAt)}")
+                    Text("Last intent: ${state.lastIntentSent ?: "unknown"}")
+                    Text("Last intent result: ${state.lastIntentResult ?: "unknown"}")
+                }
+            }
+        }
+
+        Card {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = { showLimitations = !showLimitations }) {
+                    Text(if (showLimitations) "Hide known limitations" else "Show known limitations")
+                }
+                if (showLimitations) {
+                    Text("Known limitations", style = MaterialTheme.typography.titleMedium)
+                    Text("- No auto-retry for intents")
+                    Text("- Telemetry may be stale or missing fields")
+                    Text("- Streaming depends on backend-provided URL and format")
+                }
             }
         }
 
@@ -1292,7 +1143,7 @@ private fun SettingsScreen(
                     Switch(checked = debugEnabled, onCheckedChange = { debugEnabled = it })
                 }
                 Text(
-                    "Enables extra diagnostics on Dashboard and Telemetry screens.",
+                    "Enables extra diagnostics on app screens.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -1386,7 +1237,7 @@ private fun MjpegStreamingView(
 }
 
 private fun triState(value: Boolean?): String = when (value) {
-    null -> "unknown"
+    null -> "UNAVAILABLE"
     true -> "true"
     false -> "false"
 }
@@ -1399,8 +1250,8 @@ private fun connectionLabel(status: ConnectionStatus): String = when (status) {
 
 private fun confidenceLabel(value: Any?, lastTs: Long?): String {
     val now = System.currentTimeMillis()
-    val freshness = if (lastTs == null) "UNKNOWN" else if (now - lastTs > 5_000) "STALE" else "LIVE"
-    val v = value?.toString() ?: "unknown"
+    val freshness = if (lastTs == null) "UNAVAILABLE" else if (now - lastTs > 5_000) "STALE" else "LIVE"
+    val v = value?.toString() ?: "UNAVAILABLE"
     return "$v ($freshness)"
 }
 
@@ -1424,7 +1275,7 @@ private fun parseBoundary(contentType: String?): String {
 }
 
 private fun formatTimestamp(ts: Long?): String {
-    if (ts == null) return "unknown"
+    if (ts == null) return "UNAVAILABLE"
     val formatter = DateTimeFormatter.ofPattern("HH:mm:ss")
     return Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()).format(formatter)
 }

@@ -102,6 +102,10 @@ class RobotRepository(
         return runCatching { api.getHealth() }
     }
 
+    suspend fun fetchLogs(service: String, lines: Int): Result<LogLinesResponse> {
+        return runCatching { api.getLogs(service, lines) }
+    }
+
     suspend fun sendIntent(intent: String, extras: Map<String, Any> = emptyMap()): IntentResult {
         val request = IntentRequest(
             intent = intent,

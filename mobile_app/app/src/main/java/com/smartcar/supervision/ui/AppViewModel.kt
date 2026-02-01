@@ -9,9 +9,11 @@ import com.smartcar.supervision.data.IntentResult
 import com.smartcar.supervision.data.RobotRepository
 import com.smartcar.supervision.data.SettingsStore
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import android.os.Environment
@@ -27,6 +29,7 @@ class AppViewModel(
     private val logger = AppLogger(1000)
     private var lastTelemetryLogAt: Long = 0L
     private var pollJob: Job? = null
+    private var logPollJob: Job? = null
     private var settingsStore: SettingsStore? = null
     private var contextBound = false
 
@@ -48,7 +51,9 @@ class AppViewModel(
         )
         repo.updateBaseUrl(settings.baseUrl())
         startPolling(settings.pollIntervalMs)
+        startLogPolling(settings.pollIntervalMs)
         refreshNow()
+        refreshBackendLogs()
         log(LogCategory.STATE, "settings_loaded", data = mapOf("base_url" to settings.baseUrl()))
     }
 
@@ -60,7 +65,9 @@ class AppViewModel(
         )
         repo.updateBaseUrl(settings.baseUrl())
         startPolling(settings.pollIntervalMs)
+        startLogPolling(settings.pollIntervalMs)
         refreshNow()
+        refreshBackendLogs()
         log(LogCategory.STATE, "settings_updated", data = mapOf("base_url" to settings.baseUrl()))
     }
 
@@ -131,6 +138,64 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private fun startLogPolling(pollMs: Long) {
+        logPollJob?.cancel()
+        logPollJob = viewModelScope.launch {
+            while (isActive) {
+                if (_state.value.logAutoRefresh) {
+                    fetchBackendLogsOnce()
+                }
+                delay(pollMs)
+            }
+        }
+    }
+
+    fun setLogAutoRefresh(enabled: Boolean) {
+        _state.value = _state.value.copy(logAutoRefresh = enabled)
+    }
+
+    fun refreshBackendLogs() {
+        viewModelScope.launch {
+            fetchBackendLogsOnce()
+        }
+    }
+
+    private suspend fun fetchBackendLogsOnce() {
+        val limit = _state.value.logLinesLimit
+        val services = listOf(
+            BackendLogService.REMOTE_INTERFACE,
+            BackendLogService.ORCHESTRATOR,
+            BackendLogService.UART,
+            BackendLogService.VISION,
+            BackendLogService.LLM_TTS,
+        )
+        val now = System.currentTimeMillis()
+        val snapshots = mutableMapOf<BackendLogService, BackendLogSnapshot>()
+        services.forEach { service ->
+            val result = repo.fetchLogs(service.apiName, limit)
+            result.onSuccess { payload ->
+                snapshots[service] = BackendLogSnapshot(
+                    lines = payload.lines.orEmpty(),
+                    sources = payload.sources.orEmpty(),
+                    error = payload.error,
+                    updatedAt = payload.ts?.let { it * 1000L } ?: now,
+                )
+            }.onFailure { err ->
+                snapshots[service] = BackendLogSnapshot(
+                    lines = emptyList(),
+                    sources = emptyList(),
+                    error = err.message ?: "log_fetch_error",
+                    updatedAt = now,
+                )
+            }
+        }
+        val current = _state.value
+        _state.value = current.copy(
+            backendLogs = current.backendLogs + snapshots,
+            backendLogsUpdatedAt = now,
+        )
     }
 
     fun sendIntent(

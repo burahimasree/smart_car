@@ -4,6 +4,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.Query
 
 interface RobotApi {
     @GET("status")
@@ -17,4 +18,10 @@ interface RobotApi {
 
     @POST("intent")
     suspend fun postIntent(@Body payload: IntentRequest): Response<IntentResponse>
+
+    @GET("logs")
+    suspend fun getLogs(
+        @Query("service") service: String,
+        @Query("lines") lines: Int,
+    ): LogLinesResponse
 }
