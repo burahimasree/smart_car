@@ -13,6 +13,7 @@ import argparse
 import json
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
@@ -57,6 +58,8 @@ class SensorData:
     s2: int = -1  # Sensor 2 distance (cm)
     s3: int = -1  # Sensor 3 distance (cm)
     mq2: int = 0  # Gas sensor value
+    lmotor: int = 0  # Left motor power
+    rmotor: int = 0  # Right motor power
     obstacle: bool = False  # ESP32 detected obstacle
     warning: bool = False   # ESP32 in warning zone
     
@@ -117,6 +120,8 @@ class UARTMotorBridge:
         self._blocked_reason: Optional[str] = None
         self._scan_in_progress = False
         self._scan_results: list = []
+        self._sensor_buffer = deque(maxlen=int(nav_cfg.get("sensor_buffer_size", 50)))
+        self._last_rx_log_ts: float = 0.0
 
     def _open_serial(self) -> bool:
         """Open serial port connection."""
@@ -200,6 +205,10 @@ class UARTMotorBridge:
                     data.s3 = int(val)
                 elif key == "MQ2":
                     data.mq2 = int(val)
+                elif key == "LMOTOR":
+                    data.lmotor = int(val)
+                elif key == "RMOTOR":
+                    data.rmotor = int(val)
                 elif key == "OBSTACLE":
                     data.obstacle = val == "1"
                 elif key == "WARNING":
@@ -255,6 +264,13 @@ class UARTMotorBridge:
         formatted = self._format_command(cmd)
 
         if self.sim:
+            logger.info("UART TX payload (sim) direction=%s speed=%s duration_ms=%s target=%s source=%s formatted=%s",
+                        cmd.direction,
+                        cmd.speed,
+                        cmd.duration_ms,
+                        cmd.target,
+                        cmd.source,
+                        formatted.strip())
             logger.info("[SIM] UART TX: %s", formatted.strip())
             return True
 
@@ -263,6 +279,15 @@ class UARTMotorBridge:
             return False
 
         try:
+            logger.info(
+                "UART TX payload direction=%s speed=%s duration_ms=%s target=%s source=%s formatted=%s",
+                cmd.direction,
+                cmd.speed,
+                cmd.duration_ms,
+                cmd.target,
+                cmd.source,
+                formatted.strip(),
+            )
             self.serial.write(formatted.encode("utf-8"))
             self.serial.flush()
             logger.info("UART TX: %s (source=%s)", formatted.strip(), cmd.source)
@@ -300,6 +325,10 @@ class UARTMotorBridge:
         while not self._rx_queue.empty():
             try:
                 line = self._rx_queue.get_nowait()
+                now = time.time()
+                if now - self._last_rx_log_ts >= 1.0:
+                    logger.info("UART RX sample: %s", line)
+                    self._last_rx_log_ts = now
                 # Parse ESP32 feedback (expected format: STATUS:value or JSON)
                 if line.startswith("{"):
                     # JSON response (future extension)
@@ -327,17 +356,36 @@ class UARTMotorBridge:
                         sensor_data = self._parse_sensor_data(data_raw)
                         if sensor_data:
                             self._last_sensor_data = sensor_data
+                            ts = int(time.time())
+                            frame = {
+                                "ts": ts,
+                                "s1": sensor_data.s1,
+                                "s2": sensor_data.s2,
+                                "s3": sensor_data.s3,
+                                "mq2": sensor_data.mq2,
+                                "lmotor": sensor_data.lmotor,
+                                "rmotor": sensor_data.rmotor,
+                                "min_distance": sensor_data.min_distance,
+                                "obstacle": sensor_data.obstacle,
+                                "warning": sensor_data.warning,
+                                "is_safe": sensor_data.is_safe,
+                            }
+                            self._sensor_buffer.append(frame)
                             payload = {
                                 "data": {
                                     "s1": sensor_data.s1,
                                     "s2": sensor_data.s2,
                                     "s3": sensor_data.s3,
                                     "mq2": sensor_data.mq2,
+                                    "lmotor": sensor_data.lmotor,
+                                    "rmotor": sensor_data.rmotor,
                                     "min_distance": sensor_data.min_distance,
                                     "obstacle": sensor_data.obstacle,
                                     "warning": sensor_data.warning,
                                     "is_safe": sensor_data.is_safe,
-                                }
+                                },
+                                "data_ts": ts,
+                                "buffer": list(self._sensor_buffer),
                             }
                         else:
                             payload = {"data_raw": data_raw}
@@ -386,6 +434,15 @@ class UARTMotorBridge:
         duration = int(payload.get("duration_ms", 0))
         target = payload.get("target")
         source = str(payload.get("source", "unknown"))
+
+        logger.info(
+            "nav.command parsed direction=%s speed=%s duration_ms=%s target=%s source=%s",
+            direction,
+            speed,
+            duration,
+            target,
+            source,
+        )
 
         return MotorCommand(
             direction=direction,
@@ -439,6 +496,7 @@ class UARTMotorBridge:
                     if self.sub.poll(timeout=50):  # 50ms timeout
                         topic, data = self.sub.recv_multipart(zmq.NOBLOCK)
                         payload = json.loads(data)
+                        logger.info("nav.command received payload=%s", payload)
                         cmd = self._parse_nav_command(payload)
                         self._send_command(cmd)
                 except zmq.Again:

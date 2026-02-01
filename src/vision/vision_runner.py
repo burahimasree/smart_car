@@ -405,8 +405,11 @@ def run():
                 logger.info("Reached max frame budget (%s), exiting", args.max_frames)
                 break
 
-            # Non-blocking command check
-            socks = dict(poller.poll(timeout=0))
+            # Command check
+            poll_timeout = 0
+            if vision_mode == "off" and not capture_once:
+                poll_timeout = 500
+            socks = dict(poller.poll(timeout=poll_timeout))
             if ctrl_sub in socks:
                 try:
                     topic, raw = ctrl_sub.recv_multipart(zmq.NOBLOCK)
@@ -435,7 +438,6 @@ def run():
 
             if vision_mode == "off" and not capture_once:
                 _stop_grabber()
-                time.sleep(0.05)
                 continue
 
             if not _ensure_grabber():

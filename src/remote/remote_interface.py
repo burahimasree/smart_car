@@ -7,6 +7,7 @@ remote intents into internal IPC topics for the orchestrator.
 from __future__ import annotations
 
 import json
+import time
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,9 +25,11 @@ from src.core.ipc import (
     TOPIC_DISPLAY_TEXT,
     TOPIC_ESP,
     TOPIC_HEALTH,
+    TOPIC_LLM_RESP,
     TOPIC_REMOTE_EVENT,
     TOPIC_REMOTE_INTENT,
     TOPIC_REMOTE_SESSION,
+    TOPIC_TTS,
     TOPIC_VISN,
     TOPIC_VISN_CAPTURED,
     TOPIC_VISN_FRAME,
@@ -53,11 +56,17 @@ class TelemetryState:
         self.remote_last_seen: float = 0.0
         self.last_remote_event: Optional[Dict[str, Any]] = None
         self.last_capture: Optional[Dict[str, Any]] = None
+        self.last_llm_response: Optional[str] = None
+        self.last_llm_ts: Optional[float] = None
+        self.last_tts_text: Optional[str] = None
+        self.last_tts_status: Optional[str] = None
+        self.last_tts_ts: Optional[float] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
             safety_stop = False
             motor_enabled: Optional[bool] = None
+            motor: Optional[Dict[str, Any]] = None
             min_distance: Optional[int] = None
             obstacle = False
             warning = False
@@ -69,6 +78,14 @@ class TelemetryState:
                 is_safe = data.get("is_safe")
                 if isinstance(is_safe, bool):
                     motor_enabled = is_safe
+                lmotor = data.get("lmotor")
+                rmotor = data.get("rmotor")
+                if lmotor is not None or rmotor is not None:
+                    motor = {
+                        "left": lmotor,
+                        "right": rmotor,
+                        "ts": self.last_esp.get("data_ts"),
+                    }
             if obstacle or warning or (self.last_alert is not None):
                 safety_stop = True
 
@@ -83,12 +100,20 @@ class TelemetryState:
                 "vision_active": self.vision_mode != "off",
                 "vision_paused": self.vision_paused,
                 "motor_enabled": motor_enabled,
+                "motor": motor,
                 "safety_stop": safety_stop,
                 "safety_alert": self.last_alert,
                 "sensor": self.last_esp.get("data") if self.last_esp else None,
+                "sensor_ts": self.last_esp.get("data_ts") if self.last_esp else None,
+                "sensor_buffer": self.last_esp.get("buffer") if self.last_esp else None,
                 "vision_last_detection": self.last_detection,
                 "detection_history": list(self.detection_history),
                 "last_capture": self.last_capture,
+                "last_llm_response": self.last_llm_response,
+                "last_llm_ts": int(self.last_llm_ts) if self.last_llm_ts else None,
+                "last_tts_text": self.last_tts_text,
+                "last_tts_status": self.last_tts_status,
+                "last_tts_ts": int(self.last_tts_ts) if self.last_tts_ts else None,
                 "health": self.last_health,
                 "remote_event": self.last_remote_event,
             }
@@ -122,6 +147,8 @@ class RemoteSupervisor:
             TOPIC_VISN_FRAME,
             TOPIC_VISN_CAPTURED,
             TOPIC_HEALTH,
+            TOPIC_LLM_RESP,
+            TOPIC_TTS,
             TOPIC_REMOTE_EVENT,
         ]:
             self._sub_up.setsockopt(zmq.SUBSCRIBE, topic)
@@ -134,6 +161,7 @@ class RemoteSupervisor:
             TOPIC_VISN,
             TOPIC_VISN_FRAME,
             TOPIC_VISN_CAPTURED,
+            TOPIC_TTS,
         ]:
             self._sub_down.setsockopt(zmq.SUBSCRIBE, topic)
 
@@ -262,6 +290,23 @@ class RemoteSupervisor:
                     self.telemetry.last_remote_event = payload
                 elif topic == TOPIC_VISN_CAPTURED:
                     self.telemetry.last_capture = payload
+                elif topic == TOPIC_LLM_RESP:
+                    body = payload.get("json") or {}
+                    speak = body.get("speak") or payload.get("text") or payload.get("raw")
+                    if speak:
+                        self.telemetry.last_llm_response = str(speak)[:240]
+                        self.telemetry.last_llm_ts = time.time()
+                elif topic == TOPIC_TTS:
+                    if payload.get("text"):
+                        self.telemetry.last_tts_text = str(payload.get("text"))[:240]
+                        self.telemetry.last_tts_status = "queued"
+                        self.telemetry.last_tts_ts = time.time()
+                    if payload.get("started"):
+                        self.telemetry.last_tts_status = "started"
+                        self.telemetry.last_tts_ts = time.time()
+                    if payload.get("done") or payload.get("final") or payload.get("completed"):
+                        self.telemetry.last_tts_status = "done"
+                        self.telemetry.last_tts_ts = time.time()
 
     def serve(self) -> None:
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
@@ -353,10 +398,16 @@ class RemoteSupervisor:
                 if self.path == "/health":
                     self._send_json(200, {"ok": True, "timestamp": int(time.time())})
                     return
+                log = getattr(supervisor, "logger", None)
+                if log:
+                    log.warning("/intent rejected reason=bad_path path=%s ts=%s", self.path, time.time())
                 self._send_json(404, {"error": "not_found"})
 
             def do_POST(self) -> None:
                 if not self._allowed():
+                    log = getattr(supervisor, "logger", None)
+                    if log:
+                        log.warning("/intent rejected reason=forbidden ip=%s ts=%s", self.client_address[0], time.time())
                     self._send_json(403, {"error": "forbidden"})
                     return
 
@@ -364,6 +415,9 @@ class RemoteSupervisor:
                     payload = self._read_json()
                     intent = str(payload.get("intent", "")).strip()
                     if not intent:
+                        log = getattr(supervisor, "logger", None)
+                        if log:
+                            log.warning("/intent rejected reason=missing_intent ts=%s payload=%s", time.time(), payload)
                         self._send_json(400, {"error": "missing_intent"})
                         return
 
@@ -376,10 +430,17 @@ class RemoteSupervisor:
                         "source": "remote_app",
                         "timestamp": int(time.time()),
                     }
+                    log = getattr(supervisor, "logger", None)
+                    if log:
+                        log.info("/intent received ts=%s payload=%s", time.time(), intent_payload)
+                        log.info("ipc publish topic=%s ts=%s", TOPIC_REMOTE_INTENT, time.time())
                     publish_json(supervisor._pub, TOPIC_REMOTE_INTENT, intent_payload)
                     self._send_json(202, {"accepted": True, "intent": intent})
                     return
 
+                log = getattr(supervisor, "logger", None)
+                if log:
+                    log.warning("/intent rejected reason=bad_path path=%s ts=%s", self.path, time.time())
                 self._send_json(404, {"error": "not_found"})
 
             def log_message(self, format: str, *args) -> None:

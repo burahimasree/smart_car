@@ -73,6 +73,8 @@ class Orchestrator:
         (Phase.IDLE, "wakeword"): Phase.LISTENING,
         (Phase.IDLE, "auto_trigger"): Phase.LISTENING,
         (Phase.IDLE, "manual_trigger"): Phase.LISTENING,
+        (Phase.IDLE, "manual_think"): Phase.THINKING,
+        (Phase.IDLE, "manual_text"): Phase.THINKING,
         (Phase.LISTENING, "stt_valid"): Phase.THINKING,
         (Phase.LISTENING, "stt_invalid"): Phase.IDLE,
         (Phase.LISTENING, "stt_timeout"): Phase.IDLE,
@@ -183,7 +185,14 @@ class Orchestrator:
         if self.vision_mode != VisionMode.OFF:
             publish_json(self.cmd_pub, TOPIC_CMD_PAUSE_VISION, {"pause": False, "source": "orchestrator"})
 
-    def _enter_thinking(self, text: str, vision: Optional[Dict[str, Any]] = None) -> None:
+    def _enter_thinking(
+        self,
+        text: str,
+        vision: Optional[Dict[str, Any]] = None,
+        *,
+        source: str = "orchestrator",
+        mode: Optional[str] = None,
+    ) -> None:
         self._publish_led_state("thinking")
         self._publish_display_text(f"Heard: {text[:120]}")
         payload: Dict[str, Any] = {"text": text}
@@ -192,7 +201,9 @@ class Orchestrator:
         payload["direction"] = self._last_nav_direction
         payload["world_context"] = self._world_context.get_snapshot()
         payload["context_note"] = "system_observation_only_last_known_state"
-        payload["source"] = "orchestrator"
+        payload["source"] = source
+        if mode:
+            payload["mode"] = mode
         publish_json(self.cmd_pub, TOPIC_LLM_REQ, payload)
         logger.info("LLM request text: %s", text[:120])
 
@@ -347,6 +358,8 @@ class Orchestrator:
             if self._transition("llm_with_speech"):
                 self._enter_speaking(speak, direction)
         else:
+            logger.info("LLM response has no speak text; TTS skipped")
+            self._publish_remote_event("tts_skipped", {"reason": "empty_speak"})
             if direction and direction != "stop":
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "orchestrator"})
                 self._last_nav_direction = direction
@@ -487,6 +500,7 @@ class Orchestrator:
                     publish_json(self.cmd_pub, TOPIC_VISN_CAPTURED, payload)
                 elif topic == TOPIC_ESP:
                     self.on_esp(payload)
+                    publish_json(self.cmd_pub, TOPIC_ESP, payload)
                 elif topic == TOPIC_HEALTH:
                     self.on_health(payload)
                 elif topic == TOPIC_REMOTE_SESSION:
@@ -527,46 +541,109 @@ class Orchestrator:
 
     def on_remote_intent(self, payload: Dict[str, Any]) -> None:
         source = payload.get("source", "unknown")
+        logger.info("remote_intent received source=%s payload=%s", source, payload)
         if source != "remote_app":
+            logger.warning("remote_intent rejected reason=invalid_source payload=%s", payload)
             self._publish_remote_event("rejected", {"reason": "invalid_source", "payload": payload})
             return
 
         if not self._remote_session_active:
+            logger.warning("remote_intent rejected reason=no_active_session payload=%s", payload)
             self._publish_remote_event("rejected", {"reason": "no_active_session", "payload": payload})
             return
 
         intent = str(payload.get("intent", "")).strip().lower()
         if not intent:
+            logger.warning("remote_intent rejected reason=missing_intent payload=%s", payload)
             self._publish_remote_event("rejected", {"reason": "missing_intent", "payload": payload})
             return
 
         if intent in {"enable_vision", "enable_perception"}:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"disable_vision", "disable_perception"}:
             self._set_vision_mode(VisionMode.OFF, source="remote_app")
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"enable_stream"}:
             self._set_vision_mode(VisionMode.ON_WITH_STREAM, source="remote_app")
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"disable_stream"}:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"capture_frame"}:
             request_id = self._request_frame_capture("remote_app")
+            logger.info("remote_intent accepted intent=%s request_id=%s", intent, request_id)
             self._publish_remote_event("accepted", {"intent": intent, "request_id": request_id})
             return
+        if intent in {"invoke_assistant"}:
+            if self._transition("manual_think"):
+                text = str(payload.get("text", "manual_invoke")).strip() or "manual_invoke"
+                self._last_transcript = text
+                self._enter_thinking(text, source="remote_app", mode="manual_invoke")
+                logger.info("remote_intent accepted intent=%s", intent)
+                self._publish_remote_event("accepted", {"intent": intent})
+            else:
+                logger.warning("remote_intent rejected reason=busy payload=%s", payload)
+                self._publish_remote_event("rejected", {"reason": "busy", "payload": payload})
+            return
+        if intent in {"assistant_text"}:
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                logger.warning("remote_intent rejected reason=missing_text payload=%s", payload)
+                self._publish_remote_event("rejected", {"reason": "missing_text", "payload": payload})
+                return
+            if self._transition("manual_text"):
+                self._last_transcript = text
+                self._enter_thinking(text, source="remote_app", mode="manual_text")
+                logger.info("remote_intent accepted intent=%s", intent)
+                self._publish_remote_event("accepted", {"intent": intent})
+            else:
+                logger.warning("remote_intent rejected reason=busy payload=%s", payload)
+                self._publish_remote_event("rejected", {"reason": "busy", "payload": payload})
+            return
         if intent in {"scan", "start_scan"}:
+            logger.info(
+                "nav.command publish intent=%s direction=scan speed=%s duration=%s payload=%s",
+                intent,
+                payload.get("speed"),
+                payload.get("duration"),
+                {"direction": "scan", "source": "remote_app"},
+            )
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "scan", "source": "remote_app"})
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"stop", "stop_motion"}:
+            logger.info(
+                "nav.command publish intent=%s direction=stop speed=%s duration=%s payload=%s",
+                intent,
+                payload.get("speed"),
+                payload.get("duration"),
+                {"direction": "stop", "source": "remote_app"},
+            )
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "source": "remote_app"})
+            logger.info("remote_intent accepted intent=%s", intent)
             self._publish_remote_event("accepted", {"intent": intent})
+            return
+        if intent in {"move_backward"}:
+            logger.info(
+                "nav.command publish intent=%s direction=backward speed=%s duration=%s payload=%s",
+                intent,
+                payload.get("speed"),
+                payload.get("duration"),
+                {"direction": "backward", "source": "remote_app"},
+            )
+            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "backward", "source": "remote_app"})
+            logger.info("remote_intent accepted intent=%s direction=backward", intent)
+            self._publish_remote_event("accepted", {"intent": intent, "direction": "backward"})
             return
         if intent in {"rotate", "rotate_left", "rotate_right", "start_motion", "start"}:
             direction = str(payload.get("direction", "")).strip().lower()
@@ -579,12 +656,23 @@ class Orchestrator:
                     direction = "forward"
 
             if direction not in {"forward", "backward", "left", "right"}:
+                logger.warning("remote_intent rejected reason=invalid_direction payload=%s", payload)
                 self._publish_remote_event("rejected", {"reason": "invalid_direction", "payload": payload})
                 return
+            logger.info(
+                "nav.command publish intent=%s direction=%s speed=%s duration=%s payload=%s",
+                intent,
+                direction,
+                payload.get("speed"),
+                payload.get("duration"),
+                {"direction": direction, "source": "remote_app"},
+            )
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": "remote_app"})
+            logger.info("remote_intent accepted intent=%s direction=%s", intent, direction)
             self._publish_remote_event("accepted", {"intent": intent, "direction": direction})
             return
 
+        logger.warning("remote_intent rejected reason=unsupported_intent payload=%s", payload)
         self._publish_remote_event("rejected", {"reason": "unsupported_intent", "payload": payload})
 
 

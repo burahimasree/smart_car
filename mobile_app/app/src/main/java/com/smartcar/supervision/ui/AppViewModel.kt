@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import android.os.Environment
 import java.net.URI
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -23,13 +24,14 @@ class AppViewModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
+    private val logger = AppLogger(1000)
     private var lastTelemetryLogAt: Long = 0L
     private var pollJob: Job? = null
     private var settingsStore: SettingsStore? = null
     private var contextBound = false
 
     init {
-        appendLog("app_start")
+        log(LogCategory.STATE, "app_start")
         _state.value = _state.value.copy(appStatus = AppStatus.CONNECTING)
     }
 
@@ -47,7 +49,7 @@ class AppViewModel(
         repo.updateBaseUrl(settings.baseUrl())
         startPolling(settings.pollIntervalMs)
         refreshNow()
-        appendLog("settings_loaded:${settings.baseUrl()}")
+        log(LogCategory.STATE, "settings_loaded", data = mapOf("base_url" to settings.baseUrl()))
     }
 
     fun updateSettings(settings: AppSettings) {
@@ -59,7 +61,7 @@ class AppViewModel(
         repo.updateBaseUrl(settings.baseUrl())
         startPolling(settings.pollIntervalMs)
         refreshNow()
-        appendLog("settings_updated:${settings.baseUrl()}")
+        log(LogCategory.STATE, "settings_updated", data = mapOf("base_url" to settings.baseUrl()))
     }
 
     fun refreshNow() {
@@ -79,19 +81,19 @@ class AppViewModel(
                     lastTelemetryAt = if (snapshot.telemetry != null) now else current.lastTelemetryAt,
                     lastRemoteEvent = remoteEvent ?: current.lastRemoteEvent,
                 )
-                appendLog("refresh_ok")
+                log(LogCategory.NETWORK, "refresh_ok")
             }.onFailure { err ->
                 _state.value = _state.value.copy(
                     connection = ConnectionStatus.Error(err.message ?: "refresh_error")
                 )
-                appendLog("refresh_error:${err.message ?: "unknown"}")
+                log(LogCategory.NETWORK, "refresh_error", message = err.message ?: "unknown")
             }
 
             val health = repo.checkHealth()
             health.onSuccess {
                 _state.value = _state.value.copy(health = it)
             }.onFailure { err ->
-                appendLog("health_error:${err.message ?: "unknown"}")
+                log(LogCategory.NETWORK, "health_error", message = err.message ?: "unknown")
             }
 
             refreshAppStatus()
@@ -116,7 +118,7 @@ class AppViewModel(
                         lastRemoteEvent = remoteEvent ?: current.lastRemoteEvent,
                     )
                     if (now - lastTelemetryLogAt > 30_000) {
-                        appendLog("telemetry_ok")
+                        log(LogCategory.NETWORK, "telemetry_ok")
                         lastTelemetryLogAt = now
                     }
                     refreshAppStatus()
@@ -124,7 +126,7 @@ class AppViewModel(
                     _state.value = _state.value.copy(
                         connection = ConnectionStatus.Error(err.message ?: "telemetry_error")
                     )
-                    appendLog("telemetry_error:${err.message ?: "unknown"}")
+                    log(LogCategory.NETWORK, "telemetry_error", message = err.message ?: "unknown")
                     refreshAppStatus()
                 }
             }
@@ -137,9 +139,25 @@ class AppViewModel(
         onComplete: ((IntentResult) -> Unit)? = null,
     ) {
         viewModelScope.launch {
+            val baseUrl = _state.value.settings?.baseUrl() ?: BuildConfig.ROBOT_BASE_URL
+            val payload = mapOf(
+                "intent" to intent,
+                "direction" to extras["direction"],
+                "speed" to extras["speed"],
+                "duration_ms" to extras["duration_ms"],
+                "extras" to if (extras.isEmpty()) null else extras,
+            )
             _state.value = _state.value.copy(intentInFlight = true)
             _state.value = _state.value.copy(lastIntentSent = intent, lastIntentAt = System.currentTimeMillis())
-            appendLog("intent_send:$intent")
+            log(
+                LogCategory.INTENT,
+                "intent_sent",
+                data = mapOf(
+                    "intent" to intent,
+                    "payload" to payload,
+                    "url" to baseUrl.trimEnd('/') + "/intent",
+                )
+            )
             refreshAppStatus()
             val result = repo.sendIntent(intent, extras)
             val message = when (result) {
@@ -148,9 +166,17 @@ class AppViewModel(
                 is IntentResult.TimedOut -> "timed_out: ${result.reason}"
                 is IntentResult.Failed -> "failed: ${result.reason}"
             }
-            _state.value = _state.value.copy(lastIntentResult = message)
+            _state.value = _state.value.copy(lastIntentResult = message, lastIntentResultAt = System.currentTimeMillis())
             _state.value = _state.value.copy(intentInFlight = false)
-            appendLog("intent_result:$intent:$message")
+            log(
+                LogCategory.INTENT,
+                "intent_result",
+                data = mapOf(
+                    "intent" to intent,
+                    "result" to message,
+                    "payload" to payload,
+                )
+            )
             refreshAppStatus()
             onComplete?.invoke(result)
         }
@@ -164,7 +190,7 @@ class AppViewModel(
                 label = "Scanning",
             )
         )
-        appendLog("task_start:scan_observe_stop")
+        log(LogCategory.STATE, "task_start", data = mapOf("task" to "scan_observe_stop"))
         sendIntent("scan") { result ->
             val label = when (result) {
                 is IntentResult.Accepted -> "Observe"
@@ -183,7 +209,7 @@ class AppViewModel(
                     label = label,
                 )
             )
-            appendLog("task_update:scan_observe_stop:${phase.name}")
+            log(LogCategory.STATE, "task_update", data = mapOf("task" to "scan_observe_stop", "phase" to phase.name))
             refreshAppStatus()
         }
     }
@@ -197,7 +223,7 @@ class AppViewModel(
                 label = "Observe",
             )
         )
-        appendLog("task_mark_observe")
+        log(LogCategory.STATE, "task_mark_observe")
         refreshAppStatus()
     }
 
@@ -220,14 +246,14 @@ class AppViewModel(
                     label = "Stopped",
                 )
             )
-            appendLog("task_stop")
+            log(LogCategory.STATE, "task_stop")
             refreshAppStatus()
         }
     }
 
     fun clearTask() {
         _state.value = _state.value.copy(task = TaskState())
-        appendLog("task_clear")
+        log(LogCategory.STATE, "task_clear")
         refreshAppStatus()
     }
 
@@ -243,24 +269,97 @@ class AppViewModel(
         }
     }
 
-    fun appendLog(message: String) {
-        val timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_TIME)
-        val entry = "$timestamp $message"
-        val updated = (_state.value.logs + entry).takeLast(200)
+    fun logUiAction(action: String, enabled: Boolean, blockedReason: String?) {
+        val now = System.currentTimeMillis()
+        val current = _state.value
+        _state.value = current.copy(
+            lastUiAction = action,
+            lastUiActionAt = now,
+            lastUiActionEnabled = enabled,
+            lastUiActionBlockedReason = blockedReason,
+        )
+        log(
+            LogCategory.UI,
+            "ui_action",
+            data = mapOf(
+                "action" to action,
+                "enabled" to enabled,
+                "blocked_reason" to blockedReason,
+                "app_status" to current.appStatus.name,
+                "blocking_reason" to current.blockingReason,
+            )
+        )
+    }
+
+    fun clearLogs() {
+        _state.value = _state.value.copy(logs = emptyList())
+        log(LogCategory.STATE, "log_clear")
+    }
+
+    private fun log(
+        category: LogCategory,
+        event: String,
+        message: String? = null,
+        data: Map<String, Any?> = emptyMap(),
+    ) {
+        val snapshot = appStateSnapshot(_state.value)
+        val entry = AppLogEntry(
+            ts = System.currentTimeMillis(),
+            category = category,
+            event = event,
+            message = message,
+            data = data + mapOf(
+                "app_state" to snapshot,
+                "last_ui_action" to _state.value.lastUiAction,
+                "last_intent_sent" to _state.value.lastIntentSent,
+                "last_intent_result" to _state.value.lastIntentResult,
+            ),
+        )
+        val updated = logger.append(_state.value.logs, entry)
         _state.value = _state.value.copy(logs = updated)
+    }
+
+    private fun appStateSnapshot(state: AppState): Map<String, Any?> {
+        val connection = when (state.connection) {
+            ConnectionStatus.Online -> "online"
+            ConnectionStatus.Offline -> "offline"
+            is ConnectionStatus.Error -> "error"
+        }
+        val sessionActive = (state.telemetry?.remote_session_active == true) ||
+            (state.status?.remote_session_active == true)
+        return mapOf(
+            "connection" to connection,
+            "app_status" to state.appStatus.name,
+            "blocking_reason" to state.blockingReason,
+            "intent_in_flight" to state.intentInFlight,
+            "task_phase" to state.task.phase.name,
+            "remote_session_active" to sessionActive,
+        )
     }
 
     fun exportLogs(context: Context) {
         val now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        val file = File(context.filesDir, "smartcar_log_$now.txt")
-        val content = _state.value.logs.joinToString(separator = "\n")
+        val externalRoot = Environment.getExternalStorageDirectory()
+        val logDir = File(externalRoot, "smart_car/logs")
+        if (!logDir.exists() && !logDir.mkdirs()) {
+            _state.value = _state.value.copy(logExportResult = "error: mkdir_failed ${logDir.absolutePath}")
+            log(LogCategory.STATE, "export_failed", message = "mkdir_failed", data = mapOf("path" to logDir.absolutePath))
+            return
+        }
+        val file = File(logDir, "app_logs_${now}.jsonl")
+        val content = _state.value.logs.joinToString(separator = "\n") { it.toJsonLine() }
         try {
             file.writeText(content)
             _state.value = _state.value.copy(logExportResult = "saved: ${file.absolutePath}")
-            appendLog("log_export:ok")
+            log(LogCategory.STATE, "export_success", data = mapOf("path" to file.absolutePath, "bytes" to file.length()))
         } catch (err: Exception) {
             _state.value = _state.value.copy(logExportResult = "error: ${err.message ?: "unknown"}")
-            appendLog("log_export:error")
+            log(
+                LogCategory.STATE,
+                "export_failed",
+                message = err.message ?: "unknown",
+                data = mapOf("path" to file.absolutePath)
+            )
         }
     }
 
@@ -296,7 +395,19 @@ class AppViewModel(
             else -> null
         }
 
+        val changed = current.appStatus != status || current.blockingReason != blockingReason
         _state.value = current.copy(appStatus = status, blockingReason = blockingReason)
+        if (changed) {
+            log(
+                LogCategory.STATE,
+                "app_status_change",
+                data = mapOf(
+                    "from" to current.appStatus.name,
+                    "to" to status.name,
+                    "blocking_reason" to blockingReason,
+                )
+            )
+        }
     }
 
     private fun parseDefaultIpPort(): Pair<String, Int> {

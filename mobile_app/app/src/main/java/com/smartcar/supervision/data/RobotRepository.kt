@@ -103,12 +103,15 @@ class RobotRepository(
     }
 
     suspend fun sendIntent(intent: String, extras: Map<String, Any> = emptyMap()): IntentResult {
-        val payload = mutableMapOf<String, Any>("intent" to intent)
-        payload.putAll(extras)
+        val request = IntentRequest(
+            intent = intent,
+            extras = if (extras.isEmpty()) null else extras,
+        )
         return try {
-            val response = api.postIntent(payload)
+            val response = api.postIntent(request)
             if (response.isSuccessful) {
-                IntentResult.Accepted(response.body() ?: emptyMap())
+                val body = response.body()?.toMap() ?: emptyMap()
+                IntentResult.Accepted(body)
             } else {
                 IntentResult.Rejected("http_${response.code()}")
             }

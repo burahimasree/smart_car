@@ -18,6 +18,11 @@ data class TelemetrySnapshot(
     val sensor: SensorData? = null,
     val vision_last_detection: VisionDetection? = null,
     val detection_history: List<VisionDetection>? = null,
+    val last_llm_response: String? = null,
+    val last_llm_ts: Long? = null,
+    val last_tts_text: String? = null,
+    val last_tts_status: String? = null,
+    val last_tts_ts: Long? = null,
     val health: HealthStatus? = null,
     val remote_event: RemoteEvent? = null,
 )

@@ -16,5 +16,5 @@ interface RobotApi {
     suspend fun getHealth(): HealthStatus
 
     @POST("intent")
-    suspend fun postIntent(@Body payload: Map<String, Any>): Response<Map<String, Any>>
+    suspend fun postIntent(@Body payload: IntentRequest): Response<IntentResponse>
 }
