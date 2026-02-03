@@ -13,6 +13,8 @@ LED STATES (user-specified color scheme):
     thinking                 - PINK pulse (LLM processing)
     tts_processing           - ORANGE pulse (generating speech)
     speaking                 - Dark GREEN chase pattern (playing audio)
+    scanning                 - White/teal rotating sweep (360 scan)
+    gas_danger               - Red pulse (gas danger)
     error                    - RED blink (system error)
 
 DESIGN PRINCIPLE:
@@ -133,6 +135,8 @@ class LedAnimator:
         thinking                 - PINK pulse (LLM processing)
         tts_processing           - ORANGE pulse (generating speech)
         speaking                 - Dark GREEN chase pattern (playing audio)
+        scanning                 - White/teal rotating sweep (360 scan)
+        gas_danger               - Red pulse (gas danger)
         error                    - RED blink (system error)
     """
 
@@ -224,6 +228,23 @@ class LedAnimator:
             else:
                 colors.append((0, 30, 10))   # Very dim
         self.hw.show(colors)
+
+    def _render_scanning(self, now: float) -> None:
+        """SCANNING: Rotating teal/white sweep to show 360 scan."""
+        pos = int(now * 10) % self.hw.pixel_count
+        colors: list[RGB] = []
+        for idx in range(self.hw.pixel_count):
+            delta = min((idx - pos) % self.hw.pixel_count, (pos - idx) % self.hw.pixel_count)
+            fade = max(0.0, 1.0 - delta / 2.0)
+            base = int(50 + 205 * fade)
+            colors.append((base, base, int(180 * fade)))
+        self.hw.show(colors)
+
+    def _render_gas_danger(self, now: float) -> None:
+        """GAS DANGER: Strong red pulse for hazardous gas detection."""
+        phase = 0.5 + 0.5 * math.sin(now * 4)
+        level = int(80 + 175 * phase)
+        self.hw.fill((level, 0, 0))
 
     def _render_error(self, now: float) -> None:
         """ERROR: RED blink - something is wrong."""

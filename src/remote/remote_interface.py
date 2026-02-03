@@ -63,6 +63,9 @@ class TelemetryState:
         self.last_tts_text: Optional[str] = None
         self.last_tts_status: Optional[str] = None
         self.last_tts_ts: Optional[float] = None
+        self.last_scan_summary: Optional[str] = None
+        self.last_scan_ts: Optional[float] = None
+        self.gas_threshold: int = 800
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
@@ -72,11 +75,19 @@ class TelemetryState:
             min_distance: Optional[int] = None
             obstacle = False
             warning = False
+            gas_level: Optional[int] = None
+            gas_warning = False
             if self.last_esp and "data" in self.last_esp:
                 data = self.last_esp["data"] or {}
                 obstacle = bool(data.get("obstacle", False))
                 warning = bool(data.get("warning", False))
                 min_distance = data.get("min_distance")
+                gas_level = data.get("mq2")
+                try:
+                    gas_level = int(gas_level) if gas_level is not None else None
+                except Exception:
+                    gas_level = None
+                gas_warning = gas_level is not None and gas_level >= self.gas_threshold
                 is_safe = data.get("is_safe")
                 if isinstance(is_safe, bool):
                     motor_enabled = is_safe
@@ -105,6 +116,10 @@ class TelemetryState:
                 "motor": motor,
                 "safety_stop": safety_stop,
                 "safety_alert": self.last_alert,
+                "gas_level": gas_level,
+                "gas_warning": gas_warning,
+                "last_scan_summary": self.last_scan_summary,
+                "last_scan_ts": int(self.last_scan_ts) if self.last_scan_ts else None,
                 "sensor": self.last_esp.get("data") if self.last_esp else None,
                 "sensor_ts": self.last_esp.get("data_ts") if self.last_esp else None,
                 "sensor_buffer": self.last_esp.get("buffer") if self.last_esp else None,
@@ -136,6 +151,7 @@ class RemoteSupervisor:
         self.allowed_cidrs = self._parse_cidrs(remote_cfg.get("allowed_cidrs", ["100.64.0.0/10"]))
         self.session_timeout_s = float(remote_cfg.get("session_timeout_s", 15.0))
         self._detection_history_max = int(remote_cfg.get("detection_history_max", 200))
+        self.telemetry.gas_threshold = int(self.config.get("orchestrator", {}).get("gas_threshold", 800))
 
         self.telemetry = TelemetryState()
         self._ctx = zmq.Context.instance()
@@ -350,6 +366,11 @@ class RemoteSupervisor:
                     self.telemetry.last_health = payload
                 elif topic == TOPIC_REMOTE_EVENT:
                     self.telemetry.last_remote_event = payload
+                    if payload.get("event") == "scan_complete":
+                        summary = payload.get("summary")
+                        if summary:
+                            self.telemetry.last_scan_summary = str(summary)
+                            self.telemetry.last_scan_ts = payload.get("timestamp") or time.time()
                 elif topic == TOPIC_VISN_CAPTURED:
                     self.telemetry.last_capture = payload
                 elif topic == TOPIC_LLM_RESP:

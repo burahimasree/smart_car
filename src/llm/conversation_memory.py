@@ -136,7 +136,10 @@ class ConversationMemory:
 3. If user says "follow that" or "track", set track field
 4. Keep "speak" under 50 words for natural speech
 5. Default direction to "stop" unless user requests movement
-6. Be concise and helpful - you're a robot, not a chatbot
+6. If system context says gas_warning=true, warn the user about gas danger
+7. If user asks about scan results, use last_scan_summary when available
+8. If data is missing or stale, say you don't have that data
+9. Be concise and helpful - you're a robot, not a chatbot
 
 ## CURRENT ROBOT STATE:
 {robot_state}

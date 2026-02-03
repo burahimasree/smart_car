@@ -14,6 +14,7 @@ from src.core.ipc import (
     TOPIC_DISPLAY_STATE,
     TOPIC_ESP,
     TOPIC_NAV,
+    TOPIC_REMOTE_EVENT,
     TOPIC_VISN,
     make_subscriber,
 )
@@ -46,6 +47,7 @@ class WorldContextAggregator:
         self._vision = _TimedValue()
         self._sensors = _TimedValue()
         self._robot = _TimedValue()
+        self._scan_summary = _TimedValue()
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -53,6 +55,7 @@ class WorldContextAggregator:
         self._sub_up = make_subscriber(config, channel="upstream")
         self._sub_up.setsockopt(zmq.SUBSCRIBE, TOPIC_VISN)
         self._sub_up.setsockopt(zmq.SUBSCRIBE, TOPIC_ESP)
+        self._sub_up.setsockopt(zmq.SUBSCRIBE, TOPIC_REMOTE_EVENT)
 
         self._sub_down = make_subscriber(config, channel="downstream")
         self._sub_down.setsockopt(zmq.SUBSCRIBE, TOPIC_DISPLAY_STATE)
@@ -124,6 +127,11 @@ class WorldContextAggregator:
                     robot = self._robot.value or {}
                     robot = {**robot, "vision_mode": payload.get("mode")}
                     self._robot.update(robot, ts=now)
+                elif topic == TOPIC_REMOTE_EVENT:
+                    if payload.get("event") == "scan_complete":
+                        summary = payload.get("summary")
+                        if summary:
+                            self._scan_summary.update({"summary": summary}, ts=now)
 
     def get_snapshot(self) -> Dict[str, Any]:
         now = time.time()
@@ -131,12 +139,43 @@ class WorldContextAggregator:
             vision_age = self._age_ms(self._vision.received_ts, now)
             sensors_age = self._age_ms(self._sensors.received_ts, now)
             robot_age = self._age_ms(self._robot.received_ts, now)
+            scan_age = self._age_ms(self._scan_summary.received_ts, now)
 
+            sensors_data = (self._sensors.value or {}).get("data") or {}
+            gas_level = sensors_data.get("mq2")
+            try:
+                gas_level = int(gas_level) if gas_level is not None else None
+            except Exception:
+                gas_level = None
+            gas_threshold = int(self.config.get("orchestrator", {}).get("gas_threshold", 800))
+            gas_warning = gas_level is not None and gas_level >= gas_threshold
+
+            lmotor = sensors_data.get("lmotor")
+            rmotor = sensors_data.get("rmotor")
+            motor_active = False
+            try:
+                motor_active = (lmotor is not None and int(lmotor) != 0) or (rmotor is not None and int(rmotor) != 0)
+            except Exception:
+                motor_active = False
+
+            safety_status = "clear"
+            if gas_warning:
+                safety_status = "gas_warning"
+            elif sensors_data.get("obstacle"):
+                safety_status = "obstacle"
+            elif sensors_data.get("warning"):
+                safety_status = "warning"
+            elif (self._sensors.value or {}).get("alert"):
+                safety_status = "alert"
+
+            vision_active = vision_age is not None and vision_age <= 5000
             snapshot = WorldSnapshot(
                 vision={
                     "last_known": self._vision.value,
                     "age_ms": vision_age,
                     "stale": self._is_stale(vision_age),
+                    "active": vision_active,
+                    "last_received_ts": int(self._vision.received_ts) if self._vision.received_ts else None,
                 },
                 sensors={
                     "last_known": self._sensors.value,
@@ -154,6 +193,12 @@ class WorldContextAggregator:
                 "vision": snapshot.vision,
                 "sensors": snapshot.sensors,
                 "robot_state": snapshot.robot_state,
+                "last_scan_summary": self._scan_summary.value.get("summary") if self._scan_summary.value else None,
+                "last_scan_age_ms": scan_age,
+                "gas_level": gas_level,
+                "gas_warning": gas_warning,
+                "safety_status": safety_status,
+                "motor_active": motor_active,
                 "generated_at": snapshot.generated_at,
                 "context_type": "last_known_state",
             }

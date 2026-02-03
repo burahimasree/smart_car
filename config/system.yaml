@@ -7,6 +7,8 @@ orchestrator:
   # Disabled because it triggers on background noise when no one is speaking
   auto_trigger_enabled: false
   auto_trigger_interval: 60.0
+  scan_duration_s: 4.0
+  gas_threshold: 800
 
 audio:
   # ═══════════════════════════════════════════════════════════════════════════

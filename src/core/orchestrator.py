@@ -59,6 +59,7 @@ class Phase(Enum):
     LISTENING = auto()
     THINKING = auto()
     SPEAKING = auto()
+    SCANNING = auto()
     ERROR = auto()
 
 
@@ -75,16 +76,21 @@ class Orchestrator:
         (Phase.IDLE, "manual_trigger"): Phase.LISTENING,
         (Phase.IDLE, "manual_think"): Phase.THINKING,
         (Phase.IDLE, "manual_text"): Phase.THINKING,
+        (Phase.IDLE, "manual_speak"): Phase.SPEAKING,
+        (Phase.IDLE, "scan_start"): Phase.SCANNING,
         (Phase.LISTENING, "stt_valid"): Phase.THINKING,
         (Phase.LISTENING, "stt_invalid"): Phase.IDLE,
         (Phase.LISTENING, "stt_timeout"): Phase.IDLE,
         (Phase.THINKING, "llm_with_speech"): Phase.SPEAKING,
         (Phase.THINKING, "llm_no_speech"): Phase.IDLE,
         (Phase.SPEAKING, "tts_done"): Phase.IDLE,
+        (Phase.SCANNING, "scan_complete"): Phase.IDLE,
+        (Phase.SCANNING, "scan_abort"): Phase.IDLE,
         (Phase.IDLE, "health_error"): Phase.ERROR,
         (Phase.LISTENING, "health_error"): Phase.ERROR,
         (Phase.THINKING, "health_error"): Phase.ERROR,
         (Phase.SPEAKING, "health_error"): Phase.ERROR,
+        (Phase.SCANNING, "health_error"): Phase.ERROR,
         (Phase.ERROR, "health_ok"): Phase.IDLE,
         (Phase.ERROR, "error_timeout"): Phase.IDLE,
     }
@@ -107,12 +113,24 @@ class Orchestrator:
         self._esp_min_distance = -1
         self._obstacle_latched = False
 
+        self._scan_end_ts: Optional[float] = None
+        self._scan_labels: list[str] = []
+        self._capture_labels: Dict[str, list[str]] = {}
+        self._last_scan_summary: Optional[str] = None
+        self._scan_prev_vision_mode: Optional[VisionMode] = None
+
+        self._gas_warning = False
+        self._gas_level: Optional[int] = None
+
         self._remote_session_active = False
         self._remote_last_seen = 0.0
+        self._last_led_state = "idle"
         
         orch_cfg = self.config.get("orchestrator", {}) or {}
         self.auto_trigger_enabled = bool(orch_cfg.get("auto_trigger_enabled", True))
         self.auto_trigger_interval = float(orch_cfg.get("auto_trigger_interval", 60.0))
+        self.scan_duration_s = float(orch_cfg.get("scan_duration_s", 4.0))
+        self.gas_threshold = int(orch_cfg.get("gas_threshold", 800))
         
         stt_cfg = self.config.get("stt", {}) or {}
         self.stt_timeout_s = float(stt_cfg.get("timeout_seconds", 30.0))
@@ -127,13 +145,16 @@ class Orchestrator:
         self.vision_mode = self._coerce_vision_mode(default_mode)
 
     def _publish_led_state(self, state: str) -> None:
+        if state != "gas_danger":
+            self._last_led_state = state
+        effective_state = "gas_danger" if self._gas_warning else state
         publish_json(self.cmd_pub, TOPIC_DISPLAY_STATE, {
-            "state": state,
+            "state": effective_state,
             "phase": self._phase.name,
             "timestamp": int(time.time()),
             "source": "orchestrator",
         })
-        logger.debug("LED: %s", state)
+        logger.debug("LED: %s", effective_state)
 
     def _publish_display_text(self, text: str) -> None:
         publish_json(self.cmd_pub, TOPIC_DISPLAY_TEXT, {
@@ -224,6 +245,136 @@ class Orchestrator:
                 self._last_nav_direction = normalized
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": normalized, "source": "orchestrator"})
         publish_json(self.cmd_pub, TOPIC_TTS, {"text": text, "source": "orchestrator"})
+
+    def _maybe_speak_status(self, text: str, *, context: str) -> None:
+        if self._phase != Phase.IDLE:
+            logger.info("Status TTS skipped context=%s phase=%s text=%s", context, self._phase.name, text[:120])
+            self._publish_remote_event("tts_skipped", {"reason": "busy", "context": context, "text": text})
+            return
+        if self._transition("manual_speak"):
+            self._enter_speaking(text)
+        else:
+            logger.info("Status TTS skipped context=%s reason=transition_blocked text=%s", context, text[:120])
+            self._publish_remote_event("tts_skipped", {"reason": "transition_blocked", "context": context, "text": text})
+
+    @staticmethod
+    def _summarize_labels(labels: list[str]) -> str:
+        counts: Dict[str, int] = {}
+        for label in labels:
+            label_value = (label or "").strip()
+            if not label_value or label_value == "none":
+                continue
+            counts[label_value] = counts.get(label_value, 0) + 1
+        if not counts:
+            return "no objects detected"
+        parts = []
+        for label_value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            if count == 1 or label_value.endswith("s"):
+                parts.append(f"{count} {label_value}")
+            else:
+                parts.append(f"{count} {label_value}s")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _count_labels(labels: list[str]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for label in labels:
+            label_value = (label or "").strip()
+            if not label_value or label_value == "none":
+                continue
+            counts[label_value] = counts.get(label_value, 0) + 1
+        return counts
+
+    def _start_scan(self, *, source: str) -> bool:
+        if self._phase != Phase.IDLE:
+            logger.warning("scan_start rejected reason=busy phase=%s", self._phase.name)
+            self._publish_remote_event("rejected", {"reason": "busy", "intent": "scan"})
+            return False
+        if not self._transition("scan_start"):
+            logger.warning("scan_start rejected reason=transition_blocked phase=%s", self._phase.name)
+            self._publish_remote_event("rejected", {"reason": "transition_blocked", "intent": "scan"})
+            return False
+        self._scan_end_ts = time.time() + self.scan_duration_s
+        self._scan_labels = []
+        self._scan_prev_vision_mode = self.vision_mode
+        if self.vision_mode == VisionMode.OFF:
+            self._set_vision_mode(VisionMode.ON_NO_STREAM, source="scan")
+        self._publish_led_state("scanning")
+        self._publish_display_text("Scanning 360")
+        publish_json(
+            self.cmd_pub,
+            TOPIC_NAV,
+            {
+                "direction": "right",
+                "source": source,
+                "duration_s": self.scan_duration_s,
+                "intent": "scan",
+            },
+        )
+        self._last_nav_direction = "right"
+        logger.info("scan_start source=%s duration_s=%.2f", source, self.scan_duration_s)
+        self._publish_remote_event("scan_start", {"source": source, "duration_s": self.scan_duration_s})
+        return True
+
+    def _finish_scan(self, *, reason: str, transition_event: str = "scan_complete") -> None:
+        publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "source": "scan", "reason": reason})
+        self._last_nav_direction = "stop"
+        if self._scan_prev_vision_mode == VisionMode.OFF:
+            self._set_vision_mode(VisionMode.OFF, source="scan")
+        self._scan_prev_vision_mode = None
+        summary = self._summarize_labels(self._scan_labels)
+        counts = self._count_labels(self._scan_labels)
+        self._last_scan_summary = summary
+        self._scan_end_ts = None
+        self._scan_labels = []
+        logger.info("object_summary summary=%s counts=%s", summary, counts)
+        if self._transition(transition_event):
+            self._enter_idle()
+        if transition_event == "scan_abort":
+            logger.info("scan_abort reason=%s", reason)
+        else:
+            logger.info("scan_complete reason=%s", reason)
+        self._publish_remote_event(
+            "scan_complete",
+            {"summary": summary, "counts": counts, "reason": reason},
+        )
+        if summary == "no objects detected":
+            speak_text = "Scan complete. I detected no objects."
+        else:
+            speak_text = f"Scan complete. I detected {summary}."
+        self._maybe_speak_status(speak_text, context="scan_complete")
+
+    def _abort_scan(self, *, reason: str) -> None:
+        if self._phase != Phase.SCANNING:
+            return
+        logger.warning("scan_abort reason=%s", reason)
+        self._finish_scan(reason=reason, transition_event="scan_abort")
+
+    def _update_gas_warning(self, mq2_value: Optional[int]) -> None:
+        if mq2_value is None:
+            return
+        self._gas_level = mq2_value
+        gas_warning = mq2_value >= self.gas_threshold
+        if gas_warning == self._gas_warning:
+            return
+        self._gas_warning = gas_warning
+        if gas_warning:
+            logger.warning("gas_warning level=%s threshold=%s", mq2_value, self.gas_threshold)
+            self._publish_led_state("gas_danger")
+            self._publish_display_text("Gas danger detected")
+            publish_json(
+                self.cmd_pub,
+                TOPIC_TTS,
+                {"text": "Warning. Gas level is above safe limits.", "source": "orchestrator"},
+            )
+            self._publish_remote_event(
+                "gas_warning",
+                {"level": mq2_value, "threshold": self.gas_threshold},
+            )
+        else:
+            logger.info("gas_clear level=%s threshold=%s", mq2_value, self.gas_threshold)
+            self._publish_led_state(self._last_led_state or "idle")
+            self._publish_remote_event("gas_clear", {"level": mq2_value, "threshold": self.gas_threshold})
 
     def _enter_idle(self) -> None:
         self._publish_led_state("idle")
@@ -332,6 +483,17 @@ class Orchestrator:
 
     def on_vision(self, payload: Dict[str, Any]) -> None:
         self._last_vision = payload
+        label_value = payload.get("label")
+        if self._phase == Phase.SCANNING:
+            self._scan_labels.append(str(label_value or "none"))
+            if len(self._scan_labels) > 50:
+                self._scan_labels = self._scan_labels[-50:]
+        request_id = payload.get("request_id")
+        if request_id:
+            bucket = self._capture_labels.setdefault(str(request_id), [])
+            bucket.append(str(label_value or "none"))
+            if len(bucket) > 25:
+                del bucket[0]
         if self._vision_capture_pending:
             request_id = payload.get("request_id")
             if request_id == self._vision_capture_pending:
@@ -339,6 +501,14 @@ class Orchestrator:
                 self._vision_capture_requested_ts = None
                 if self._phase == Phase.THINKING:
                     self._enter_thinking(self._last_transcript, vision=payload)
+
+    def on_vision_captured(self, payload: Dict[str, Any]) -> None:
+        request_id = payload.get("request_id")
+        labels: list[str] = []
+        if request_id:
+            labels = self._capture_labels.pop(str(request_id), [])
+        summary = self._summarize_labels(labels)
+        self._maybe_speak_status(f"Capture complete: {summary}.", context="capture_complete")
 
     def on_llm(self, payload: Dict[str, Any]) -> None:
         if self._phase != Phase.THINKING:
@@ -387,12 +557,20 @@ class Orchestrator:
         if data:
             self._esp_obstacle = bool(data.get("obstacle", False)) or (data.get("is_safe") is False)
             self._esp_min_distance = int(data.get("min_distance", -1))
+            mq2_value = data.get("mq2")
+            try:
+                mq2_value = int(mq2_value) if mq2_value is not None else None
+            except Exception:
+                mq2_value = None
+            self._update_gas_warning(mq2_value)
             if self._esp_obstacle and not self._obstacle_latched:
                 self._obstacle_latched = True
                 logger.warning("Obstacle detected by ESP32; forcing stop")
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "obstacle"})
                 self._last_nav_direction = "stop"
                 self._publish_display_text("Obstacle detected - stopping")
+                if self._phase == Phase.SCANNING:
+                    self._abort_scan(reason="obstacle")
             elif not self._esp_obstacle and self._obstacle_latched:
                 self._obstacle_latched = False
                 logger.info("Obstacle cleared by ESP32")
@@ -435,6 +613,9 @@ class Orchestrator:
                 self._vision_capture_requested_ts = None
                 if self._phase == Phase.THINKING:
                     self._enter_thinking(self._last_transcript)
+
+        if self._phase == Phase.SCANNING and self._scan_end_ts and now >= self._scan_end_ts:
+            self._finish_scan(reason="time_bound")
 
         if self._remote_session_active and self._remote_last_seen:
             if (now - self._remote_last_seen) > self.remote_session_timeout_s:
@@ -497,6 +678,7 @@ class Orchestrator:
                     self.on_vision(payload)
                     publish_json(self.cmd_pub, TOPIC_VISN, payload)
                 elif topic == TOPIC_VISN_CAPTURED:
+                    self.on_vision_captured(payload)
                     publish_json(self.cmd_pub, TOPIC_VISN_CAPTURED, payload)
                 elif topic == TOPIC_ESP:
                     self.on_esp(payload)
@@ -558,6 +740,11 @@ class Orchestrator:
             self._publish_remote_event("rejected", {"reason": "missing_intent", "payload": payload})
             return
 
+        if self._phase == Phase.SCANNING:
+            logger.warning("remote_intent rejected reason=scan_in_progress payload=%s", payload)
+            self._publish_remote_event("rejected", {"reason": "scan_in_progress", "payload": payload})
+            return
+
         if intent in {"enable_vision", "enable_perception"}:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
             logger.info("remote_intent accepted intent=%s", intent)
@@ -580,6 +767,7 @@ class Orchestrator:
             return
         if intent in {"capture_frame"}:
             request_id = self._request_frame_capture("remote_app")
+            self._maybe_speak_status("Capturing frame.", context="capture_start")
             logger.info("remote_intent accepted intent=%s request_id=%s", intent, request_id)
             self._publish_remote_event("accepted", {"intent": intent, "request_id": request_id})
             return
@@ -610,16 +798,9 @@ class Orchestrator:
                 self._publish_remote_event("rejected", {"reason": "busy", "payload": payload})
             return
         if intent in {"scan", "start_scan"}:
-            logger.info(
-                "nav.command publish intent=%s direction=scan speed=%s duration=%s payload=%s",
-                intent,
-                payload.get("speed"),
-                payload.get("duration"),
-                {"direction": "scan", "source": "remote_app"},
-            )
-            publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "scan", "source": "remote_app"})
-            logger.info("remote_intent accepted intent=%s", intent)
-            self._publish_remote_event("accepted", {"intent": intent})
+            if self._start_scan(source="remote_app"):
+                logger.info("remote_intent accepted intent=%s", intent)
+                self._publish_remote_event("accepted", {"intent": intent})
             return
         if intent in {"stop", "stop_motion"}:
             logger.info(
