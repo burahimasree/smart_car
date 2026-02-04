@@ -11,8 +11,8 @@ orchestrator:
   scan_duration_s: 4.0
   scan_turn_direction: right
   # Gas warning threshold (MQ2)
-  gas_warning_threshold: 600
-  gas_danger_threshold: 800
+  gas_warning_threshold: 1000
+  gas_danger_threshold: 1000
   # Scan confidence floor (filter low-confidence detections during scans)
   scan_min_confidence: 0.6
 

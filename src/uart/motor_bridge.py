@@ -79,8 +79,8 @@ class UARTMotorBridge:
     """Bidirectional UART bridge for ESP32 motor control with collision avoidance."""
 
     # Safety thresholds (backup to ESP32 safety)
-    STOP_DISTANCE_CM = 10
-    WARNING_DISTANCE_CM = 20
+    STOP_DISTANCE_CM = 1000
+    WARNING_DISTANCE_CM = 1000
 
     # Default command mapping (can be overridden from config)
     # Align with ESP32 sketch command tokens in esp-code.ino

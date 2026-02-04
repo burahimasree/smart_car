@@ -131,8 +131,8 @@ class Orchestrator:
         self.auto_trigger_interval = float(orch_cfg.get("auto_trigger_interval", 60.0))
         self.scan_duration_s = float(orch_cfg.get("scan_duration_s", 4.0))
         self.scan_turn_direction = str(orch_cfg.get("scan_turn_direction", "right")).lower()
-        self.gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 600))
-        self.gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 800))
+        self.gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 1000))
+        self.gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 1000))
         self.scan_min_confidence = float(orch_cfg.get("scan_min_confidence", 0.6))
         
         stt_cfg = self.config.get("stt", {}) or {}

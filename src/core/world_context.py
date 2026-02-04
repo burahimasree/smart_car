@@ -53,8 +53,8 @@ class WorldContextAggregator:
         self._thread: Optional[threading.Thread] = None
 
         orch_cfg = self.config.get("orchestrator", {}) or {}
-        self._gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 600))
-        self._gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 800))
+        self._gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 1000))
+        self._gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 1000))
 
         self._sub_up = make_subscriber(config, channel="upstream")
         self._sub_up.setsockopt(zmq.SUBSCRIBE, TOPIC_VISN)
