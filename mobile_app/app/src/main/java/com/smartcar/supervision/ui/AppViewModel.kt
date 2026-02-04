@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.smartcar.supervision.BuildConfig
 import com.smartcar.supervision.data.AppSettings
+import com.smartcar.supervision.data.CameraSettingsUpdate
 import com.smartcar.supervision.data.IntentResult
 import com.smartcar.supervision.data.RobotRepository
 import com.smartcar.supervision.data.SettingsStore
@@ -57,6 +58,7 @@ class AppViewModel(
         startLogPolling(settings.pollIntervalMs)
         refreshNow()
         refreshBackendLogs()
+        fetchCameraSettings()
         log(LogCategory.STATE, "settings_loaded", data = mapOf("base_url" to settings.baseUrl()))
     }
 
@@ -71,7 +73,39 @@ class AppViewModel(
         startLogPolling(settings.pollIntervalMs)
         refreshNow()
         refreshBackendLogs()
+        fetchCameraSettings()
         log(LogCategory.STATE, "settings_updated", data = mapOf("base_url" to settings.baseUrl()))
+    }
+
+    fun fetchCameraSettings() {
+        viewModelScope.launch {
+            val result = repo.fetchCameraSettings()
+            result.onSuccess { settings ->
+                _state.value = _state.value.copy(cameraSettings = settings, cameraUpdateStatus = "loaded")
+                log(LogCategory.STATE, "camera_settings_loaded")
+            }.onFailure { err ->
+                _state.value = _state.value.copy(cameraUpdateStatus = "load_error: ${err.message ?: "unknown"}")
+                log(LogCategory.STATE, "camera_settings_error", message = err.message ?: "unknown")
+            }
+        }
+    }
+
+    fun updateCameraSettings(update: CameraSettingsUpdate) {
+        viewModelScope.launch {
+            val result = repo.updateCameraSettings(update)
+            result.onSuccess { response ->
+                val status = if (response.ok == true) "updated" else "update_failed"
+                _state.value = _state.value.copy(
+                    cameraSettings = response.settings ?: _state.value.cameraSettings,
+                    cameraUpdateStatus = status,
+                    cameraUpdateRequiresRestart = response.requires_restart,
+                )
+                log(LogCategory.STATE, "camera_settings_update", data = mapOf("status" to status))
+            }.onFailure { err ->
+                _state.value = _state.value.copy(cameraUpdateStatus = "update_error: ${err.message ?: "unknown"}")
+                log(LogCategory.STATE, "camera_settings_update_error", message = err.message ?: "unknown")
+            }
+        }
     }
 
     fun refreshNow() {

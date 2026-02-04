@@ -106,6 +106,23 @@ class RobotRepository(
         return runCatching { api.getLogs(service, lines) }
     }
 
+    suspend fun fetchCameraSettings(): Result<CameraSettings> {
+        return runCatching { api.getCameraSettings() }
+    }
+
+    suspend fun updateCameraSettings(update: CameraSettingsUpdate): Result<CameraSettingsResponse> {
+        return try {
+            val response = api.updateCameraSettings(update)
+            if (response.isSuccessful) {
+                Result.success(response.body() ?: CameraSettingsResponse(ok = true))
+            } else {
+                Result.success(CameraSettingsResponse(ok = false))
+            }
+        } catch (err: Exception) {
+            Result.failure(err)
+        }
+    }
+
     suspend fun sendIntent(
         intent: String,
         text: String? = null,

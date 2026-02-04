@@ -19,6 +19,12 @@ interface RobotApi {
     @POST("intent")
     suspend fun postIntent(@Body payload: IntentRequest): Response<IntentResponse>
 
+    @GET("settings/camera")
+    suspend fun getCameraSettings(): CameraSettings
+
+    @POST("settings/camera")
+    suspend fun updateCameraSettings(@Body payload: CameraSettingsUpdate): Response<CameraSettingsResponse>
+
     @GET("logs")
     suspend fun getLogs(
         @Query("service") service: String,

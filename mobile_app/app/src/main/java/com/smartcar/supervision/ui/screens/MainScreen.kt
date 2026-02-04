@@ -1404,6 +1404,20 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
     var editPort by remember(state.settings) { mutableStateOf(state.settings?.robotPort?.toString() ?: "") }
     var editPollMs by remember(state.settings) { mutableStateOf(state.settings?.pollIntervalMs?.toString() ?: "") }
     var editDebug by remember(state.settings) { mutableStateOf(state.settings?.debugEnabled ?: false) }
+    val cameraSettings = state.cameraSettings
+    var editGamma by remember(cameraSettings) { mutableStateOf(cameraSettings?.stream_gamma?.toString() ?: "") }
+    var editCamWidth by remember(cameraSettings) { mutableStateOf(cameraSettings?.picam2_width?.toString() ?: "") }
+    var editCamHeight by remember(cameraSettings) { mutableStateOf(cameraSettings?.picam2_height?.toString() ?: "") }
+    var editCamFps by remember(cameraSettings) { mutableStateOf(cameraSettings?.picam2_fps?.toString() ?: "") }
+    val editControls = remember(cameraSettings) {
+        mutableStateMapOf<String, String>().apply {
+            (cameraSettings?.picam2_controls ?: emptyMap()).forEach { (key, value) ->
+                put(key, value)
+            }
+        }
+    }
+    var newControlKey by remember { mutableStateOf("") }
+    var newControlValue by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -1463,6 +1477,135 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
                     checked = editDebug,
                     onCheckedChange = { editDebug = it }
                 )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Camera Settings
+        StatusCard("Camera Settings") {
+            if (cameraSettings == null) {
+                Text("Camera settings not loaded", fontSize = 12.sp, color = Color.Gray)
+            }
+
+            OutlinedTextField(
+                value = editGamma,
+                onValueChange = { editGamma = it },
+                label = { Text("Stream Gamma") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = editCamWidth,
+                    onValueChange = { editCamWidth = it.filter { c -> c.isDigit() } },
+                    label = { Text("Picam Width") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                OutlinedTextField(
+                    value = editCamHeight,
+                    onValueChange = { editCamHeight = it.filter { c -> c.isDigit() } },
+                    label = { Text("Picam Height") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = editCamFps,
+                onValueChange = { editCamFps = it.filter { c -> c.isDigit() } },
+                label = { Text("Picam FPS") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+
+            Spacer(Modifier.height(12.dp))
+            Text("Picamera2 Controls", fontWeight = FontWeight.Bold)
+            val controlKeys = editControls.keys.sorted()
+            controlKeys.forEach { key ->
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = editControls[key] ?: "",
+                    onValueChange = { editControls[key] = it },
+                    label = { Text(key) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = newControlKey,
+                    onValueChange = { newControlKey = it },
+                    label = { Text("New Control Key") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = newControlValue,
+                    onValueChange = { newControlValue = it },
+                    label = { Text("New Control Value") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val key = newControlKey.trim()
+                        val value = newControlValue.trim()
+                        if (key.isNotEmpty() && value.isNotEmpty()) {
+                            editControls[key] = value
+                            newControlKey = ""
+                            newControlValue = ""
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Add Control")
+                }
+                TextButton(
+                    onClick = { viewModel.fetchCameraSettings() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Refresh")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    val update = com.smartcar.supervision.data.CameraSettingsUpdate(
+                        stream_gamma = editGamma.toDoubleOrNull(),
+                        picam2_width = editCamWidth.toIntOrNull(),
+                        picam2_height = editCamHeight.toIntOrNull(),
+                        picam2_fps = editCamFps.toIntOrNull(),
+                        picam2_controls = editControls.toMap()
+                    )
+                    viewModel.updateCameraSettings(update)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Tune, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Apply Camera Settings")
+            }
+
+            state.cameraUpdateStatus?.let { status ->
+                Spacer(Modifier.height(6.dp))
+                Text("Status: $status", fontSize = 12.sp, color = Color.Gray)
+            }
+            if (state.cameraUpdateRequiresRestart == true) {
+                Spacer(Modifier.height(4.dp))
+                Text("Vision restart required for resolution changes", fontSize = 12.sp, color = Color.Red)
             }
         }
 

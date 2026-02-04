@@ -14,6 +14,7 @@ import zmq
 from src.core.config_loader import load_config
 from src.core.ipc import (
     TOPIC_CMD_PAUSE_VISION,
+    TOPIC_CMD_CAMERA_SETTINGS,
     TOPIC_CMD_VISN_CAPTURE,
     TOPIC_CMD_VISION_MODE,
     TOPIC_VISN,
@@ -174,6 +175,17 @@ class LatestFrameGrabber(threading.Thread):
         if not self.is_alive():
             self.cap = None
 
+    def update_controls(self, controls: dict) -> bool:
+        if self.picam2 is None:
+            return False
+        try:
+            self.picam2.set_controls(controls)
+            logger.info("Picamera2 controls updated: %s", controls)
+            return True
+        except Exception as exc:
+            logger.warning("Picamera2 control update failed: %s", exc)
+            return False
+
 
 class MockDetector:
     """Deterministic detector used when running tests without a real model."""
@@ -204,6 +216,7 @@ class StreamPublisher(threading.Thread):
         self._stream_interval = 1.0 / max(1.0, stream_fps)
         self._should_stream = should_stream
         self._gamma_lut = gamma_lut
+        self._gamma_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._last_stream_time = 0.0
 
@@ -224,13 +237,19 @@ class StreamPublisher(threading.Thread):
             if frame is None:
                 time.sleep(0.005)
                 continue
-            if self._gamma_lut is not None:
-                frame = cv2.LUT(frame, self._gamma_lut)
+            with self._gamma_lock:
+                gamma_lut = self._gamma_lut
+            if gamma_lut is not None:
+                frame = cv2.LUT(frame, gamma_lut)
             success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
             if not success:
                 continue
             self._pub.send_multipart([TOPIC_VISN_FRAME, encoded.tobytes()])
             self._last_stream_time = now
+
+    def set_gamma_lut(self, gamma_lut: Optional[np.ndarray]) -> None:
+        with self._gamma_lock:
+            self._gamma_lut = gamma_lut
 
 
 def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
@@ -358,6 +377,7 @@ def run():
     ctrl_sub = make_subscriber(cfg, topic=TOPIC_CMD_PAUSE_VISION, channel="downstream")
     ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_VISN_CAPTURE)
     ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_VISION_MODE)
+    ctrl_sub.setsockopt(zmq.SUBSCRIBE, TOPIC_CMD_CAMERA_SETTINGS)
     poller = zmq.Poller()
     poller.register(ctrl_sub, zmq.POLLIN)
 
@@ -394,9 +414,15 @@ def run():
 
     stream_gamma = float(vis_cfg.get("stream_gamma", 1.0))
     gamma_lut: Optional[np.ndarray] = None
-    if stream_gamma > 0.0 and abs(stream_gamma - 1.0) > 0.001:
-        inv = 1.0 / stream_gamma
-        gamma_lut = np.array([((i / 255.0) ** inv) * 255 for i in range(256)]).astype("uint8")
+
+    def _build_gamma_lut(value: float) -> Optional[np.ndarray]:
+        if value <= 0.0 or abs(value - 1.0) <= 0.001:
+            return None
+        inv = 1.0 / value
+        return np.array([((i / 255.0) ** inv) * 255 for i in range(256)]).astype("uint8")
+
+    gamma_lut = _build_gamma_lut(stream_gamma)
+    if gamma_lut is not None:
         logger.info("Stream gamma correction enabled (gamma=%.2f)", stream_gamma)
 
     streamer: Optional[StreamPublisher] = None
@@ -505,6 +531,29 @@ def run():
                         vision_mode = mode
                         stream_enabled = (mode == "on_with_stream")
                         logger.info("Vision mode set to %s", vision_mode)
+                    elif topic == TOPIC_CMD_CAMERA_SETTINGS:
+                        incoming_controls = msg.get("picam2_controls") or {}
+                        if isinstance(incoming_controls, dict):
+                            picam2_controls.update(incoming_controls)
+                            if "ColourGains" in picam2_controls and isinstance(picam2_controls["ColourGains"], list):
+                                gains = picam2_controls["ColourGains"]
+                                if len(gains) >= 2:
+                                    picam2_controls["ColourGains"] = (float(gains[0]), float(gains[1]))
+                            if grabber is not None:
+                                grabber.update_controls(picam2_controls)
+                        if "stream_gamma" in msg:
+                            try:
+                                stream_gamma = float(msg.get("stream_gamma", stream_gamma))
+                            except (TypeError, ValueError):
+                                stream_gamma = stream_gamma
+                            gamma_lut = _build_gamma_lut(stream_gamma)
+                            if streamer is not None:
+                                streamer.set_gamma_lut(gamma_lut)
+                            logger.info("Updated stream gamma=%.2f", stream_gamma)
+                        if "picam2_fps" in msg and isinstance(msg.get("picam2_fps"), (int, float)):
+                            picam2_fps = int(msg.get("picam2_fps"))
+                            if grabber is not None:
+                                grabber.update_controls({"FrameRate": picam2_fps})
                 except zmq.Again:
                     pass
                 except json.JSONDecodeError as exc:

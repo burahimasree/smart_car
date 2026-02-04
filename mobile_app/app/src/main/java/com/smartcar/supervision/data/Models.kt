@@ -87,3 +87,28 @@ data class LogLinesResponse(
     val ts: Long? = null,
     val error: String? = null,
 )
+
+@JsonClass(generateAdapter = true)
+data class CameraSettings(
+    val stream_gamma: Double? = null,
+    val picam2_width: Int? = null,
+    val picam2_height: Int? = null,
+    val picam2_fps: Int? = null,
+    val picam2_controls: Map<String, String>? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class CameraSettingsResponse(
+    val ok: Boolean? = null,
+    val requires_restart: Boolean? = null,
+    val settings: CameraSettings? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class CameraSettingsUpdate(
+    val stream_gamma: Double? = null,
+    val picam2_width: Int? = null,
+    val picam2_height: Int? = null,
+    val picam2_fps: Int? = null,
+    val picam2_controls: Map<String, String>? = null,
+)

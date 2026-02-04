@@ -27,6 +27,7 @@ TOPIC_CMD_LISTEN_START = b"cmd.listen.start"
 TOPIC_CMD_LISTEN_STOP = b"cmd.listen.stop"
 TOPIC_CMD_TTS_SPEAK = b"cmd.tts.speak"
 TOPIC_CMD_VISION_MODE = b"cmd.vision.mode"
+TOPIC_CMD_CAMERA_SETTINGS = b"cmd.camera.settings"
 
 # Remote supervision topics
 TOPIC_REMOTE_INTENT = b"remote.intent"

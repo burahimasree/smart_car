@@ -7,7 +7,6 @@ remote intents into internal IPC topics for the orchestrator.
 from __future__ import annotations
 
 import json
-import time
 import threading
 import time
 from collections import deque
@@ -18,11 +17,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs
 
 import zmq
+import yaml
 
 from src.core.config_loader import load_config
 from src.core.ipc import (
     TOPIC_CMD_VISION_MODE,
     TOPIC_CMD_PAUSE_VISION,
+    TOPIC_CMD_CAMERA_SETTINGS,
     TOPIC_DISPLAY_STATE,
     TOPIC_DISPLAY_TEXT,
     TOPIC_ESP,
@@ -131,6 +132,7 @@ class TelemetryState:
 
 class RemoteSupervisor:
     def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
         self.config = load_config(config_path)
         log_dir = Path(self.config.get("logs", {}).get("directory", "logs"))
         if not log_dir.is_absolute():
@@ -148,6 +150,7 @@ class RemoteSupervisor:
         self.telemetry = TelemetryState()
         self._ctx = zmq.Context.instance()
         self._pub = make_publisher(self.config, channel="upstream")
+        self._pub_down = make_publisher(self.config, channel="downstream")
         self._sub_up = make_subscriber(self.config, channel="upstream")
         self._sub_down = make_subscriber(self.config, channel="downstream")
 
@@ -243,6 +246,140 @@ class RemoteSupervisor:
             "lines": merged[-max_lines:],
             "sources": sources,
             "ts": int(time.time()),
+        }
+
+    def _load_raw_config(self) -> Dict[str, Any]:
+        return yaml.safe_load(self.config_path.read_text()) or {}
+
+    def _save_raw_config(self, data: Dict[str, Any]) -> None:
+        self.config_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    @staticmethod
+    def _stringify_controls(controls: Dict[str, Any]) -> Dict[str, str]:
+        output: Dict[str, str] = {}
+        for key, value in controls.items():
+            if isinstance(value, (list, tuple)):
+                output[key] = ",".join(str(item) for item in value)
+            else:
+                output[key] = str(value)
+        return output
+
+    @staticmethod
+    def _parse_control_value(value: Any) -> Any:
+        if isinstance(value, (bool, int, float, list, tuple)):
+            return value
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        if "," in text or (text.startswith("[") and text.endswith("]")):
+            stripped = text.strip("[]")
+            items = [item.strip() for item in stripped.split(",") if item.strip()]
+            parsed_items = []
+            for item in items:
+                try:
+                    parsed_items.append(float(item))
+                except ValueError:
+                    parsed_items.append(item)
+            return parsed_items
+        try:
+            if "." in text:
+                return float(text)
+            return int(text)
+        except ValueError:
+            return text
+
+    def _camera_settings_payload(self, vision_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        controls = vision_cfg.get("picam2_controls") or {}
+        if not isinstance(controls, dict):
+            controls = {}
+        return {
+            "stream_gamma": vision_cfg.get("stream_gamma", 1.0),
+            "picam2_width": vision_cfg.get("picam2_width"),
+            "picam2_height": vision_cfg.get("picam2_height"),
+            "picam2_fps": vision_cfg.get("picam2_fps"),
+            "picam2_controls": self._stringify_controls(controls),
+        }
+
+    def _update_camera_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw = self._load_raw_config()
+        vision_cfg = raw.get("vision") if isinstance(raw.get("vision"), dict) else {}
+        if not isinstance(vision_cfg, dict):
+            vision_cfg = {}
+        requires_restart = False
+        updated = False
+        update_payload: Dict[str, Any] = {}
+
+        if "picam2_controls" in payload and isinstance(payload.get("picam2_controls"), dict):
+            controls = vision_cfg.get("picam2_controls") or {}
+            if not isinstance(controls, dict):
+                controls = {}
+            incoming_controls = payload.get("picam2_controls") or {}
+            parsed_controls: Dict[str, Any] = {}
+            for key, value in incoming_controls.items():
+                parsed_value = self._parse_control_value(value)
+                if parsed_value is None:
+                    continue
+                parsed_controls[str(key)] = parsed_value
+            if parsed_controls:
+                controls.update(parsed_controls)
+                vision_cfg["picam2_controls"] = controls
+                update_payload["picam2_controls"] = controls
+                updated = True
+
+        if "stream_gamma" in payload:
+            try:
+                gamma_value = float(payload.get("stream_gamma"))
+                vision_cfg["stream_gamma"] = gamma_value
+                update_payload["stream_gamma"] = gamma_value
+                updated = True
+            except (TypeError, ValueError):
+                pass
+
+        if "picam2_fps" in payload:
+            try:
+                fps_value = int(payload.get("picam2_fps"))
+                vision_cfg["picam2_fps"] = fps_value
+                update_payload["picam2_fps"] = fps_value
+                updated = True
+            except (TypeError, ValueError):
+                pass
+
+        if "picam2_width" in payload:
+            try:
+                width_value = int(payload.get("picam2_width"))
+                if vision_cfg.get("picam2_width") != width_value:
+                    requires_restart = True
+                vision_cfg["picam2_width"] = width_value
+                updated = True
+            except (TypeError, ValueError):
+                pass
+
+        if "picam2_height" in payload:
+            try:
+                height_value = int(payload.get("picam2_height"))
+                if vision_cfg.get("picam2_height") != height_value:
+                    requires_restart = True
+                vision_cfg["picam2_height"] = height_value
+                updated = True
+            except (TypeError, ValueError):
+                pass
+
+        if updated:
+            raw["vision"] = vision_cfg
+            self._save_raw_config(raw)
+            self.config = load_config(self.config_path)
+            if update_payload:
+                publish_json(self._pub_down, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
+
+        return {
+            "ok": True,
+            "requires_restart": requires_restart,
+            "settings": self._camera_settings_payload(vision_cfg),
         }
 
     @staticmethod
@@ -489,6 +626,13 @@ class RemoteSupervisor:
                 if parsed.path == "/health":
                     self._send_json(200, {"ok": True, "timestamp": int(time.time())})
                     return
+                if parsed.path == "/settings/camera":
+                    raw = supervisor._load_raw_config()
+                    vision_cfg = raw.get("vision") if isinstance(raw.get("vision"), dict) else {}
+                    if not isinstance(vision_cfg, dict):
+                        vision_cfg = {}
+                    self._send_json(200, supervisor._camera_settings_payload(vision_cfg))
+                    return
                 if parsed.path == "/logs":
                     qs = parse_qs(parsed.query or "")
                     service = (qs.get("service") or qs.get("name") or [None])[0]
@@ -544,6 +688,12 @@ class RemoteSupervisor:
                         log.info("ipc publish topic=%s ts=%s", TOPIC_REMOTE_INTENT, time.time())
                     publish_json(supervisor._pub, TOPIC_REMOTE_INTENT, intent_payload)
                     self._send_json(202, {"accepted": True, "intent": intent})
+                    return
+
+                if self.path == "/settings/camera":
+                    payload = self._read_json()
+                    result = supervisor._update_camera_settings(payload)
+                    self._send_json(200, result)
                     return
 
                 log = getattr(supervisor, "logger", None)

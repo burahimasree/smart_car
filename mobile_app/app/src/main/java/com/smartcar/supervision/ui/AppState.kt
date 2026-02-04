@@ -38,6 +38,9 @@ data class AppState(
     val logLinesLimit: Int = 200,
     val debugPanelVisible: Boolean = false,
     val settings: com.smartcar.supervision.data.AppSettings? = null,
+    val cameraSettings: com.smartcar.supervision.data.CameraSettings? = null,
+    val cameraUpdateStatus: String? = null,
+    val cameraUpdateRequiresRestart: Boolean? = null,
     val streamOwner: StreamOwner? = null,
     val streamError: String? = null,
 )
