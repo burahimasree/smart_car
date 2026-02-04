@@ -1416,6 +1416,22 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
             }
         }
     }
+    val defaultGamma = "1.0"
+    val defaultCamWidth = "832"
+    val defaultCamHeight = "468"
+    val defaultCamFps = "12"
+    val defaultControls = mapOf(
+        "FrameRate" to "12",
+        "AwbEnable" to "false",
+        "AeEnable" to "false",
+        "ColourGains" to "1.6,1.6",
+        "ExposureTime" to "8000",
+        "AnalogueGain" to "1.0",
+        "Brightness" to "0.0",
+        "Contrast" to "1.0",
+        "Saturation" to "1.0",
+        "Sharpness" to "1.0",
+    )
     var newControlKey by remember { mutableStateOf("") }
     var newControlValue by remember { mutableStateOf("") }
 
@@ -1606,6 +1622,31 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
             if (state.cameraUpdateRequiresRestart == true) {
                 Spacer(Modifier.height(4.dp))
                 Text("Vision restart required for resolution changes", fontSize = 12.sp, color = Color.Red)
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    editGamma = defaultGamma
+                    editCamWidth = defaultCamWidth
+                    editCamHeight = defaultCamHeight
+                    editCamFps = defaultCamFps
+                    editControls.clear()
+                    editControls.putAll(defaultControls)
+                    val update = com.smartcar.supervision.data.CameraSettingsUpdate(
+                        stream_gamma = defaultGamma.toDoubleOrNull(),
+                        picam2_width = defaultCamWidth.toIntOrNull(),
+                        picam2_height = defaultCamHeight.toIntOrNull(),
+                        picam2_fps = defaultCamFps.toIntOrNull(),
+                        picam2_controls = defaultControls
+                    )
+                    viewModel.updateCameraSettings(update)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Reset Camera Defaults")
             }
 
             Spacer(Modifier.height(8.dp))
