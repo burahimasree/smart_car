@@ -25,6 +25,9 @@ interface RobotApi {
     @POST("settings/camera")
     suspend fun updateCameraSettings(@Body payload: CameraSettingsUpdate): Response<CameraSettingsResponse>
 
+    @POST("service/restart")
+    suspend fun restartService(@Body payload: ServiceRestartRequest): Response<ServiceRestartResponse>
+
     @GET("logs")
     suspend fun getLogs(
         @Query("service") service: String,

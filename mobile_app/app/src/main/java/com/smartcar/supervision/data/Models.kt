@@ -112,3 +112,15 @@ data class CameraSettingsUpdate(
     val picam2_fps: Int? = null,
     val picam2_controls: Map<String, String>? = null,
 )
+
+@JsonClass(generateAdapter = true)
+data class ServiceRestartResponse(
+    val ok: Boolean? = null,
+    val service: String? = null,
+    val error: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class ServiceRestartRequest(
+    val service: String,
+)

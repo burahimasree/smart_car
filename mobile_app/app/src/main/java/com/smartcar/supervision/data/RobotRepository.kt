@@ -123,6 +123,19 @@ class RobotRepository(
         }
     }
 
+    suspend fun restartService(service: String): Result<ServiceRestartResponse> {
+        return try {
+            val response = api.restartService(ServiceRestartRequest(service))
+            if (response.isSuccessful) {
+                Result.success(response.body() ?: ServiceRestartResponse(ok = true, service = service))
+            } else {
+                Result.success(ServiceRestartResponse(ok = false, service = service))
+            }
+        } catch (err: Exception) {
+            Result.failure(err)
+        }
+    }
+
     suspend fun sendIntent(
         intent: String,
         text: String? = null,

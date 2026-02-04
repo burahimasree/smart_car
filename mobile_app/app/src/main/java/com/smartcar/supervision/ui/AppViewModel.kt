@@ -108,6 +108,20 @@ class AppViewModel(
         }
     }
 
+    fun restartVisionService() {
+        viewModelScope.launch {
+            val result = repo.restartService("vision")
+            result.onSuccess { response ->
+                val status = if (response.ok == true) "restart_ok" else "restart_failed"
+                _state.value = _state.value.copy(serviceRestartStatus = status)
+                log(LogCategory.STATE, "vision_restart", data = mapOf("status" to status))
+            }.onFailure { err ->
+                _state.value = _state.value.copy(serviceRestartStatus = "restart_error: ${err.message ?: "unknown"}")
+                log(LogCategory.STATE, "vision_restart_error", message = err.message ?: "unknown")
+            }
+        }
+    }
+
     fun refreshNow() {
         viewModelScope.launch {
             val now = System.currentTimeMillis()

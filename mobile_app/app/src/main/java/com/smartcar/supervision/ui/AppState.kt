@@ -41,6 +41,7 @@ data class AppState(
     val cameraSettings: com.smartcar.supervision.data.CameraSettings? = null,
     val cameraUpdateStatus: String? = null,
     val cameraUpdateRequiresRestart: Boolean? = null,
+    val serviceRestartStatus: String? = null,
     val streamOwner: StreamOwner? = null,
     val streamError: String? = null,
 )

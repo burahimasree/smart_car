@@ -1607,6 +1607,21 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
                 Spacer(Modifier.height(4.dp))
                 Text("Vision restart required for resolution changes", fontSize = 12.sp, color = Color.Red)
             }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { viewModel.restartVisionService() },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Restart Vision Service")
+            }
+            state.serviceRestartStatus?.let { status ->
+                Spacer(Modifier.height(6.dp))
+                Text("Vision restart: $status", fontSize = 12.sp, color = Color.Gray)
+            }
         }
 
         Spacer(Modifier.height(16.dp))

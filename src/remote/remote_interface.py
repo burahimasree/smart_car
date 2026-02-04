@@ -7,6 +7,7 @@ remote intents into internal IPC topics for the orchestrator.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from collections import deque
@@ -382,6 +383,27 @@ class RemoteSupervisor:
             "settings": self._camera_settings_payload(vision_cfg),
         }
 
+    def _restart_service(self, service: str) -> Dict[str, Any]:
+        if service != "vision":
+            return {"ok": False, "service": service, "error": "unsupported_service"}
+        try:
+            result = subprocess.run(
+                ["sudo", "systemctl", "restart", service],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except Exception as exc:
+            return {"ok": False, "service": service, "error": str(exc)}
+        if result.returncode != 0:
+            return {
+                "ok": False,
+                "service": service,
+                "error": (result.stderr or result.stdout or "restart_failed").strip(),
+            }
+        return {"ok": True, "service": service}
+
     @staticmethod
     def _parse_cidrs(raw: Any) -> List[Any]:
         cidrs = raw if isinstance(raw, list) else [raw]
@@ -693,6 +715,13 @@ class RemoteSupervisor:
                 if self.path == "/settings/camera":
                     payload = self._read_json()
                     result = supervisor._update_camera_settings(payload)
+                    self._send_json(200, result)
+                    return
+
+                if self.path == "/service/restart":
+                    payload = self._read_json()
+                    service = str(payload.get("service", "")).strip().lower()
+                    result = supervisor._restart_service(service)
                     self._send_json(200, result)
                     return
 
