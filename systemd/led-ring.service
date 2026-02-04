@@ -12,7 +12,7 @@ Environment=PROJECT_ROOT=/home/dev/smart_car
 Environment=PYTHONPATH=/home/dev/smart_car
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/dev/smart_car/.env
-ExecStart=/home/dev/smart_car/.venvs/visn-py313/bin/python -m src.piled.led_ring_service --config config/system.yaml
+ExecStart=/home/dev/smart_car/.venvs/visn-py313/bin/python -m src.piled.led_ring_service --config config/system.yaml --pixels 10
 Restart=on-failure
 RestartSec=3
 StandardOutput=append:/home/dev/smart_car/logs/led-ring.log

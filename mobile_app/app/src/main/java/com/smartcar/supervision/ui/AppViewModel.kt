@@ -32,6 +32,8 @@ class AppViewModel(
     private var logPollJob: Job? = null
     private var settingsStore: SettingsStore? = null
     private var contextBound = false
+    private var notificationHelper: GasNotificationHelper? = null
+    private var lastGasSeverity: String? = null
 
     init {
         log(LogCategory.STATE, "app_start")
@@ -43,6 +45,7 @@ class AppViewModel(
         contextBound = true
         val store = SettingsStore(context.applicationContext)
         settingsStore = store
+        notificationHelper = GasNotificationHelper(context.applicationContext).also { it.ensureChannel() }
         val (defaultIp, defaultPort) = parseDefaultIpPort()
         val settings = store.loadDefaults(defaultIp, defaultPort)
         _state.value = _state.value.copy(
@@ -79,7 +82,7 @@ class AppViewModel(
             val snapshotResult = repo.fetchSnapshotOnce()
             snapshotResult.onSuccess { snapshot ->
                 val current = _state.value
-                val remoteEvent = snapshot.telemetry?.remote_event?.let { it.toString() }
+                val remoteEvent = snapshot.telemetry?.remote_event?.event
                 _state.value = current.copy(
                     connection = ConnectionStatus.Online,
                     status = snapshot.status ?: current.status,
@@ -88,6 +91,17 @@ class AppViewModel(
                     lastTelemetryAt = if (snapshot.telemetry != null) now else current.lastTelemetryAt,
                     lastRemoteEvent = remoteEvent ?: current.lastRemoteEvent,
                 )
+                handleGasSeverityUpdate(snapshot.telemetry)
+                if (remoteEvent != null && remoteEvent != current.lastRemoteEvent) {
+                    log(
+                        LogCategory.STATE,
+                        "remote_event",
+                        data = mapOf(
+                            "event" to remoteEvent,
+                            "payload" to snapshot.telemetry?.remote_event,
+                        )
+                    )
+                }
                 log(LogCategory.NETWORK, "refresh_ok")
             }.onFailure { err ->
                 _state.value = _state.value.copy(
@@ -115,7 +129,7 @@ class AppViewModel(
                 _state.value = _state.value.copy(lastConnectAttemptAt = now)
                 result.onSuccess { snapshot ->
                     val current = _state.value
-                    val remoteEvent = snapshot.telemetry?.remote_event?.let { it.toString() }
+                    val remoteEvent = snapshot.telemetry?.remote_event?.event
                     _state.value = current.copy(
                         connection = ConnectionStatus.Online,
                         status = snapshot.status ?: current.status,
@@ -124,6 +138,17 @@ class AppViewModel(
                         lastTelemetryAt = if (snapshot.telemetry != null) now else current.lastTelemetryAt,
                         lastRemoteEvent = remoteEvent ?: current.lastRemoteEvent,
                     )
+                    handleGasSeverityUpdate(snapshot.telemetry)
+                    if (remoteEvent != null && remoteEvent != current.lastRemoteEvent) {
+                        log(
+                            LogCategory.STATE,
+                            "remote_event",
+                            data = mapOf(
+                                "event" to remoteEvent,
+                                "payload" to snapshot.telemetry?.remote_event,
+                            )
+                        )
+                    }
                     if (now - lastTelemetryLogAt > 30_000) {
                         log(LogCategory.NETWORK, "telemetry_ok")
                         lastTelemetryLogAt = now
@@ -200,6 +225,10 @@ class AppViewModel(
 
     fun sendIntent(
         intent: String,
+        text: String? = null,
+        direction: String? = null,
+        speed: Int? = null,
+        durationMs: Int? = null,
         extras: Map<String, Any> = emptyMap(),
         onComplete: ((IntentResult) -> Unit)? = null,
     ) {
@@ -207,9 +236,10 @@ class AppViewModel(
             val baseUrl = _state.value.settings?.baseUrl() ?: BuildConfig.ROBOT_BASE_URL
             val payload = mapOf(
                 "intent" to intent,
-                "direction" to extras["direction"],
-                "speed" to extras["speed"],
-                "duration_ms" to extras["duration_ms"],
+                "text" to text,
+                "direction" to direction,
+                "speed" to speed,
+                "duration_ms" to durationMs,
                 "extras" to if (extras.isEmpty()) null else extras,
             )
             _state.value = _state.value.copy(intentInFlight = true)
@@ -224,7 +254,14 @@ class AppViewModel(
                 )
             )
             refreshAppStatus()
-            val result = repo.sendIntent(intent, extras)
+            val result = repo.sendIntent(
+                intent = intent,
+                text = text,
+                direction = direction,
+                speed = speed,
+                durationMs = durationMs,
+                extras = extras,
+            )
             val message = when (result) {
                 is IntentResult.Accepted -> "accepted"
                 is IntentResult.Rejected -> "rejected: ${result.reason}"
@@ -361,6 +398,22 @@ class AppViewModel(
         log(LogCategory.STATE, "log_clear")
     }
 
+    fun requestStream(owner: StreamOwner, enabled: Boolean): Boolean {
+        val current = _state.value.streamOwner
+        if (enabled) {
+            if (current == null || current == owner) {
+                _state.value = _state.value.copy(streamOwner = owner, streamError = null)
+                return true
+            }
+            _state.value = _state.value.copy(streamError = "stream_in_use_by_${current.name.lowercase()}")
+            return false
+        }
+        if (current == owner) {
+            _state.value = _state.value.copy(streamOwner = null, streamError = null)
+        }
+        return true
+    }
+
     private fun log(
         category: LogCategory,
         event: String,
@@ -492,6 +545,23 @@ class AppViewModel(
             val host = cleaned.substringBefore("/").substringBefore(":")
             val port = cleaned.substringAfter(":", "80").substringBefore("/").toIntOrNull() ?: 80
             host to port
+        }
+    }
+
+    private fun handleGasSeverityUpdate(telemetry: com.smartcar.supervision.data.TelemetrySnapshot?) {
+        val severity = telemetry?.gas_severity ?: telemetry?.gas_warning?.let { if (it) "warning" else "clear" }
+        if (severity == null) return
+        if (severity == lastGasSeverity) return
+        lastGasSeverity = severity
+        val level = telemetry?.gas_level
+        val helper = notificationHelper
+        if (helper == null) return
+        if (severity == "warning" || severity == "danger") {
+            helper.showAlert(severity, level)
+            log(LogCategory.STATE, "gas_alert", data = mapOf("severity" to severity, "level" to level))
+        } else if (severity == "clear") {
+            helper.clear()
+            log(LogCategory.STATE, "gas_clear", data = mapOf("level" to level))
         }
     }
 }

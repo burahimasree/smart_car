@@ -26,6 +26,10 @@ data class TelemetrySnapshot(
     val last_tts_text: String? = null,
     val last_tts_status: String? = null,
     val last_tts_ts: Long? = null,
+    val last_scan_summary: String? = null,
+    val gas_level: Int? = null,
+    val gas_warning: Boolean? = null,
+    val gas_severity: String? = null,
     val health: HealthStatus? = null,
     val remote_event: RemoteEvent? = null,
 )

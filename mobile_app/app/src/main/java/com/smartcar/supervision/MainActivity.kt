@@ -31,6 +31,19 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val notificationsGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!notificationsGranted) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1002
+                )
+            }
+        }
         super.onCreate(savedInstanceState)
         setContent {
             SupervisionTheme {

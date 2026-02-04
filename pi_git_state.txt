@@ -1,0 +1,20 @@
+branch:
+main
+remote:
+origin	git@github.com:burahimasree/smart_car.git (fetch)
+origin	git@github.com:burahimasree/smart_car.git (push)
+head:
+ef6350fc7bd42d15cf6c92c5fffe2ce148d18e51
+local_not_on_origin_experimental:
+e4b8758 (origin/experimental) yeah
+2339883 version 1.122
+1a9061d pre-UI-refactor
+status:
+ M src/core/orchestrator.py
+ M src/remote/remote_interface.py
+ M src/uart/motor_bridge.py
+?? captured/
+?? scripts/check_throttle.sh
+?? src/motor_bridge.py
+?? src/orchestrator.py
+?? src/remote_interface.py

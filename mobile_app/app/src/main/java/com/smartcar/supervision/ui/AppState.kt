@@ -38,6 +38,8 @@ data class AppState(
     val logLinesLimit: Int = 200,
     val debugPanelVisible: Boolean = false,
     val settings: com.smartcar.supervision.data.AppSettings? = null,
+    val streamOwner: StreamOwner? = null,
+    val streamError: String? = null,
 )
 
 enum class BackendLogService(val label: String, val apiName: String) {
@@ -75,6 +77,11 @@ enum class TaskPhase {
     EXECUTING,
     OBSERVE,
     STOPPED,
+}
+
+enum class StreamOwner {
+    CONTROL,
+    VISION,
 }
 
 data class TaskState(

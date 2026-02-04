@@ -106,9 +106,20 @@ class RobotRepository(
         return runCatching { api.getLogs(service, lines) }
     }
 
-    suspend fun sendIntent(intent: String, extras: Map<String, Any> = emptyMap()): IntentResult {
+    suspend fun sendIntent(
+        intent: String,
+        text: String? = null,
+        direction: String? = null,
+        speed: Int? = null,
+        durationMs: Int? = null,
+        extras: Map<String, Any> = emptyMap(),
+    ): IntentResult {
         val request = IntentRequest(
             intent = intent,
+            text = text,
+            direction = direction,
+            speed = speed,
+            duration_ms = durationMs,
             extras = if (extras.isEmpty()) null else extras,
         )
         return try {

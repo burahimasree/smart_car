@@ -47,10 +47,14 @@ class WorldContextAggregator:
         self._vision = _TimedValue()
         self._sensors = _TimedValue()
         self._robot = _TimedValue()
-        self._scan_summary = _TimedValue()
+        self._events = _TimedValue()
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+
+        orch_cfg = self.config.get("orchestrator", {}) or {}
+        self._gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 600))
+        self._gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 800))
 
         self._sub_up = make_subscriber(config, channel="upstream")
         self._sub_up.setsockopt(zmq.SUBSCRIBE, TOPIC_VISN)
@@ -115,6 +119,18 @@ class WorldContextAggregator:
                         "reason": payload.get("reason"),
                     }
                     self._sensors.update(sensors, ts=now)
+                elif topic == TOPIC_REMOTE_EVENT:
+                    event = str(payload.get("event", ""))
+                    current = self._events.value or {}
+                    if event == "scan_complete":
+                        current = {**current, "last_scan_summary": payload.get("summary")}
+                    elif event == "gas_warning":
+                        current = {**current, "gas_warning": True, "gas_severity": "warning"}
+                    elif event == "gas_danger":
+                        current = {**current, "gas_warning": True, "gas_severity": "danger"}
+                    elif event == "gas_clear":
+                        current = {**current, "gas_warning": False, "gas_severity": "clear"}
+                    self._events.update(current, ts=now)
                 elif topic == TOPIC_DISPLAY_STATE:
                     robot = self._robot.value or {}
                     robot = {**robot, "mode": payload.get("state")}
@@ -127,11 +143,6 @@ class WorldContextAggregator:
                     robot = self._robot.value or {}
                     robot = {**robot, "vision_mode": payload.get("mode")}
                     self._robot.update(robot, ts=now)
-                elif topic == TOPIC_REMOTE_EVENT:
-                    if payload.get("event") == "scan_complete":
-                        summary = payload.get("summary")
-                        if summary:
-                            self._scan_summary.update({"summary": summary}, ts=now)
 
     def get_snapshot(self) -> Dict[str, Any]:
         now = time.time()
@@ -139,34 +150,28 @@ class WorldContextAggregator:
             vision_age = self._age_ms(self._vision.received_ts, now)
             sensors_age = self._age_ms(self._sensors.received_ts, now)
             robot_age = self._age_ms(self._robot.received_ts, now)
-            scan_age = self._age_ms(self._scan_summary.received_ts, now)
+            events_age = self._age_ms(self._events.received_ts, now)
 
-            sensors_data = (self._sensors.value or {}).get("data") or {}
-            gas_level = sensors_data.get("mq2")
-            try:
-                gas_level = int(gas_level) if gas_level is not None else None
-            except Exception:
-                gas_level = None
-            gas_threshold = int(self.config.get("orchestrator", {}).get("gas_threshold", 800))
-            gas_warning = gas_level is not None and gas_level >= gas_threshold
+            sensor_data = (self._sensors.value or {}).get("data") or {}
+            gas_level = sensor_data.get("mq2")
+            gas_warning = self._events.value.get("gas_warning") if self._events.value else None
+            gas_severity = self._events.value.get("gas_severity") if self._events.value else None
+            if gas_severity is None and gas_level is not None:
+                gas_value = int(gas_level)
+                if gas_value >= self._gas_danger_threshold:
+                    gas_severity = "danger"
+                elif gas_value >= self._gas_warning_threshold:
+                    gas_severity = "warning"
+                else:
+                    gas_severity = "clear"
+            if gas_warning is None and gas_severity is not None:
+                gas_warning = gas_severity in {"warning", "danger"}
 
-            lmotor = sensors_data.get("lmotor")
-            rmotor = sensors_data.get("rmotor")
+            motor_left = sensor_data.get("lmotor")
+            motor_right = sensor_data.get("rmotor")
             motor_active = False
-            try:
-                motor_active = (lmotor is not None and int(lmotor) != 0) or (rmotor is not None and int(rmotor) != 0)
-            except Exception:
-                motor_active = False
-
-            safety_status = "clear"
-            if gas_warning:
-                safety_status = "gas_warning"
-            elif sensors_data.get("obstacle"):
-                safety_status = "obstacle"
-            elif sensors_data.get("warning"):
-                safety_status = "warning"
-            elif (self._sensors.value or {}).get("alert"):
-                safety_status = "alert"
+            if motor_left is not None or motor_right is not None:
+                motor_active = bool((motor_left or 0) != 0 or (motor_right or 0) != 0)
 
             vision_active = vision_age is not None and vision_age <= 5000
             snapshot = WorldSnapshot(
@@ -193,12 +198,21 @@ class WorldContextAggregator:
                 "vision": snapshot.vision,
                 "sensors": snapshot.sensors,
                 "robot_state": snapshot.robot_state,
-                "last_scan_summary": self._scan_summary.value.get("summary") if self._scan_summary.value else None,
-                "last_scan_age_ms": scan_age,
+                "motor_activity": {
+                    "left": motor_left,
+                    "right": motor_right,
+                    "active": motor_active,
+                },
+                "safety": {
+                    "obstacle": sensor_data.get("obstacle"),
+                    "warning": sensor_data.get("warning"),
+                    "is_safe": sensor_data.get("is_safe"),
+                },
                 "gas_level": gas_level,
                 "gas_warning": gas_warning,
-                "safety_status": safety_status,
-                "motor_active": motor_active,
+                "gas_severity": gas_severity,
+                "last_scan_summary": (self._events.value or {}).get("last_scan_summary"),
+                "events_age_ms": events_age,
                 "generated_at": snapshot.generated_at,
                 "context_type": "last_known_state",
             }

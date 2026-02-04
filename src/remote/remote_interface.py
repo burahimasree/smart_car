@@ -64,8 +64,9 @@ class TelemetryState:
         self.last_tts_status: Optional[str] = None
         self.last_tts_ts: Optional[float] = None
         self.last_scan_summary: Optional[str] = None
-        self.last_scan_ts: Optional[float] = None
-        self.gas_threshold: int = 800
+        self.gas_level: Optional[int] = None
+        self.gas_warning: Optional[bool] = None
+        self.gas_severity: Optional[str] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
@@ -75,19 +76,11 @@ class TelemetryState:
             min_distance: Optional[int] = None
             obstacle = False
             warning = False
-            gas_level: Optional[int] = None
-            gas_warning = False
             if self.last_esp and "data" in self.last_esp:
                 data = self.last_esp["data"] or {}
                 obstacle = bool(data.get("obstacle", False))
                 warning = bool(data.get("warning", False))
                 min_distance = data.get("min_distance")
-                gas_level = data.get("mq2")
-                try:
-                    gas_level = int(gas_level) if gas_level is not None else None
-                except Exception:
-                    gas_level = None
-                gas_warning = gas_level is not None and gas_level >= self.gas_threshold
                 is_safe = data.get("is_safe")
                 if isinstance(is_safe, bool):
                     motor_enabled = is_safe
@@ -116,16 +109,16 @@ class TelemetryState:
                 "motor": motor,
                 "safety_stop": safety_stop,
                 "safety_alert": self.last_alert,
-                "gas_level": gas_level,
-                "gas_warning": gas_warning,
-                "last_scan_summary": self.last_scan_summary,
-                "last_scan_ts": int(self.last_scan_ts) if self.last_scan_ts else None,
                 "sensor": self.last_esp.get("data") if self.last_esp else None,
                 "sensor_ts": self.last_esp.get("data_ts") if self.last_esp else None,
                 "sensor_buffer": self.last_esp.get("buffer") if self.last_esp else None,
                 "vision_last_detection": self.last_detection,
                 "detection_history": list(self.detection_history),
                 "last_capture": self.last_capture,
+                "last_scan_summary": self.last_scan_summary,
+                "gas_level": self.gas_level,
+                "gas_warning": self.gas_warning,
+                "gas_severity": self.gas_severity,
                 "last_llm_response": self.last_llm_response,
                 "last_llm_ts": int(self.last_llm_ts) if self.last_llm_ts else None,
                 "last_tts_text": self.last_tts_text,
@@ -151,7 +144,6 @@ class RemoteSupervisor:
         self.allowed_cidrs = self._parse_cidrs(remote_cfg.get("allowed_cidrs", ["100.64.0.0/10"]))
         self.session_timeout_s = float(remote_cfg.get("session_timeout_s", 15.0))
         self._detection_history_max = int(remote_cfg.get("detection_history_max", 200))
-        self.telemetry.gas_threshold = int(self.config.get("orchestrator", {}).get("gas_threshold", 800))
 
         self.telemetry = TelemetryState()
         self._ctx = zmq.Context.instance()
@@ -362,15 +354,30 @@ class RemoteSupervisor:
                         self.telemetry.last_alert = str(alert)
                     if payload.get("blocked"):
                         self.telemetry.last_alert = str(payload.get("reason", "blocked"))
+                    data = payload.get("data") or {}
+                    if "mq2" in data:
+                        try:
+                            self.telemetry.gas_level = int(data.get("mq2"))
+                        except (TypeError, ValueError):
+                            self.telemetry.gas_level = None
+                        if self.telemetry.gas_level is not None and self.telemetry.gas_severity is None:
+                            self.telemetry.gas_severity = "unknown"
                 elif topic == TOPIC_HEALTH:
                     self.telemetry.last_health = payload
                 elif topic == TOPIC_REMOTE_EVENT:
                     self.telemetry.last_remote_event = payload
-                    if payload.get("event") == "scan_complete":
-                        summary = payload.get("summary")
-                        if summary:
-                            self.telemetry.last_scan_summary = str(summary)
-                            self.telemetry.last_scan_ts = payload.get("timestamp") or time.time()
+                    event = payload.get("event")
+                    if event == "scan_complete":
+                        self.telemetry.last_scan_summary = payload.get("summary")
+                    elif event == "gas_warning":
+                        self.telemetry.gas_warning = True
+                        self.telemetry.gas_severity = "warning"
+                    elif event == "gas_danger":
+                        self.telemetry.gas_warning = True
+                        self.telemetry.gas_severity = "danger"
+                    elif event == "gas_clear":
+                        self.telemetry.gas_warning = False
+                        self.telemetry.gas_severity = "clear"
                 elif topic == TOPIC_VISN_CAPTURED:
                     self.telemetry.last_capture = payload
                 elif topic == TOPIC_LLM_RESP:

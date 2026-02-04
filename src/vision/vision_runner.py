@@ -52,6 +52,7 @@ class LatestFrameGrabber(threading.Thread):
         picam_width: int = 832,
         picam_height: int = 468,
         picam_fps: int = 12,
+        picam2_controls: Optional[dict] = None,
     ) -> None:
         super().__init__(daemon=True, name="FrameGrabber")
         self.camera_index = camera_index
@@ -68,9 +69,12 @@ class LatestFrameGrabber(threading.Thread):
             try:
                 from picamera2 import Picamera2  # type: ignore
                 picam2 = Picamera2()
+                controls = {"FrameRate": picam_fps}
+                if picam2_controls:
+                    controls.update(picam2_controls)
                 video_config = picam2.create_video_configuration(
                     main={"size": (picam_width, picam_height), "format": "RGB888"},
-                    controls={"FrameRate": picam_fps},
+                    controls=controls,
                 )
                 picam2.configure(video_config)
                 picam2.start()
@@ -78,7 +82,9 @@ class LatestFrameGrabber(threading.Thread):
                 self._backend = "picam2"
                 self.backend = "picam2"
                 self._opened = True
-            except Exception:
+                logger.info("Picamera2 controls applied: %s", controls)
+            except Exception as exc:
+                logger.warning("Picamera2 init failed or controls rejected: %s", exc)
                 self.picam2 = None
 
         if not self._opened:
@@ -179,6 +185,52 @@ class MockDetector:
         height, width = frame.shape[:2]
         bbox = (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
         return [Detection(label="mock-object", confidence=0.99, bbox=bbox)]
+
+
+class StreamPublisher(threading.Thread):
+    """Dedicated stream publisher that is decoupled from inference."""
+
+    def __init__(
+        self,
+        pub_sock,
+        grabber: LatestFrameGrabber,
+        stream_fps: float,
+        should_stream,
+        gamma_lut: Optional[np.ndarray],
+    ) -> None:
+        super().__init__(daemon=True, name="StreamPublisher")
+        self._pub = pub_sock
+        self._grabber = grabber
+        self._stream_interval = 1.0 / max(1.0, stream_fps)
+        self._should_stream = should_stream
+        self._gamma_lut = gamma_lut
+        self._stop_event = threading.Event()
+        self._last_stream_time = 0.0
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self.join(timeout=2.0)
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            if not self._should_stream():
+                time.sleep(0.05)
+                continue
+            now = time.perf_counter()
+            if (now - self._last_stream_time) < self._stream_interval:
+                time.sleep(0.001)
+                continue
+            frame, _ = self._grabber.get_frame()
+            if frame is None:
+                time.sleep(0.005)
+                continue
+            if self._gamma_lut is not None:
+                frame = cv2.LUT(frame, self._gamma_lut)
+            success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+            if not success:
+                continue
+            self._pub.send_multipart([TOPIC_VISN_FRAME, encoded.tobytes()])
+            self._last_stream_time = now
 
 
 def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
@@ -316,6 +368,7 @@ def run():
     forced_capture_mode = False
     stream_enabled = False
     vision_mode = _normalize_vision_mode(vis_cfg.get("default_mode", "off"))
+    stream_enabled = (vision_mode == "on_with_stream")
     frame_counter = 0
     
     # Use threaded frame grabber for latest-frame pattern
@@ -326,13 +379,31 @@ def run():
     picam_width = int(vis_cfg.get("picam2_width", 832))
     picam_height = int(vis_cfg.get("picam2_height", 468))
     picam_fps = int(vis_cfg.get("picam2_fps", 12))
+    picam2_controls = vis_cfg.get("picam2_controls") or {}
+    if not isinstance(picam2_controls, dict):
+        logger.warning("picam2_controls must be a dict; ignoring invalid value")
+        picam2_controls = {}
+    if "ColourGains" in picam2_controls and isinstance(picam2_controls["ColourGains"], list):
+        gains = picam2_controls["ColourGains"]
+        if len(gains) >= 2:
+            picam2_controls["ColourGains"] = (float(gains[0]), float(gains[1]))
     capture_root = _coerce_path(vis_cfg.get("capture_root")) or Path("captured")
     capture_session_id = str(vis_cfg.get("capture_session_id", "")) or time.strftime("%Y%m%d_%H%M%S")
     capture_dir = capture_root / capture_session_id
     capture_counter = 0
 
+    stream_gamma = float(vis_cfg.get("stream_gamma", 1.0))
+    gamma_lut: Optional[np.ndarray] = None
+    if stream_gamma > 0.0 and abs(stream_gamma - 1.0) > 0.001:
+        inv = 1.0 / stream_gamma
+        gamma_lut = np.array([((i / 255.0) ** inv) * 255 for i in range(256)]).astype("uint8")
+        logger.info("Stream gamma correction enabled (gamma=%.2f)", stream_gamma)
+
+    streamer: Optional[StreamPublisher] = None
+
     def _ensure_grabber() -> bool:
         nonlocal grabber
+        nonlocal streamer
         if grabber is not None:
             return True
         grabber = LatestFrameGrabber(
@@ -342,6 +413,7 @@ def run():
             picam_width=picam_width,
             picam_height=picam_height,
             picam_fps=picam_fps,
+            picam2_controls=picam2_controls,
         )
         if not grabber.is_opened():
             logger.error("Cannot open camera index %s", camera_index)
@@ -349,32 +421,34 @@ def run():
             return False
         grabber.start()
         logger.info("Started threaded frame grabber (%s) at %.1f FPS", grabber.backend, target_fps)
+        if streamer is None:
+            streamer = StreamPublisher(
+                pub,
+                grabber,
+                stream_fps,
+                lambda: stream_enabled and not paused,
+                gamma_lut,
+            )
+            streamer.start()
+            logger.info("Started stream publisher at %.1f FPS", stream_fps)
         return True
 
     def _stop_grabber() -> None:
         nonlocal grabber
+        nonlocal streamer
         if grabber is None:
             return
         grabber.stop()
         grabber = None
         logger.info("Stopped camera grabber")
+        if streamer is not None:
+            streamer.stop()
+            streamer = None
+            logger.info("Stopped stream publisher")
     
     # Inference rate limiting
     min_inference_interval = 1.0 / target_fps
     last_inference_time = 0.0
-    stream_interval = 1.0 / max(1.0, stream_fps)
-    last_stream_time = 0.0
-
-    def _publish_stream_frame(frame: np.ndarray) -> None:
-        nonlocal last_stream_time
-        now = time.perf_counter()
-        if (now - last_stream_time) < stream_interval:
-            return
-        success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-        if not success:
-            return
-        pub.send_multipart([TOPIC_VISN_FRAME, encoded.tobytes()])
-        last_stream_time = now
 
     def _save_capture_async(frame: np.ndarray, request_id: Optional[str]) -> None:
         nonlocal capture_counter
@@ -476,9 +550,6 @@ def run():
             if frame_counter % 50 == 0:
                 logger.info("Vision tick frame=%s dets=%s mode=%s", frame_counter, len(detections), vision_mode)
 
-            if stream_enabled and not paused:
-                _publish_stream_frame(frame)
-            
             if force_capture:
                 capture_once = False
                 if capture_save:

@@ -58,8 +58,8 @@ class Phase(Enum):
     IDLE = auto()
     LISTENING = auto()
     THINKING = auto()
-    SPEAKING = auto()
     SCANNING = auto()
+    SPEAKING = auto()
     ERROR = auto()
 
 
@@ -78,19 +78,20 @@ class Orchestrator:
         (Phase.IDLE, "manual_text"): Phase.THINKING,
         (Phase.IDLE, "manual_speak"): Phase.SPEAKING,
         (Phase.IDLE, "scan_start"): Phase.SCANNING,
+        (Phase.THINKING, "scan_start"): Phase.SCANNING,
         (Phase.LISTENING, "stt_valid"): Phase.THINKING,
         (Phase.LISTENING, "stt_invalid"): Phase.IDLE,
         (Phase.LISTENING, "stt_timeout"): Phase.IDLE,
         (Phase.THINKING, "llm_with_speech"): Phase.SPEAKING,
         (Phase.THINKING, "llm_no_speech"): Phase.IDLE,
-        (Phase.SPEAKING, "tts_done"): Phase.IDLE,
         (Phase.SCANNING, "scan_complete"): Phase.IDLE,
         (Phase.SCANNING, "scan_abort"): Phase.IDLE,
+        (Phase.SPEAKING, "tts_done"): Phase.IDLE,
         (Phase.IDLE, "health_error"): Phase.ERROR,
         (Phase.LISTENING, "health_error"): Phase.ERROR,
         (Phase.THINKING, "health_error"): Phase.ERROR,
-        (Phase.SPEAKING, "health_error"): Phase.ERROR,
         (Phase.SCANNING, "health_error"): Phase.ERROR,
+        (Phase.SPEAKING, "health_error"): Phase.ERROR,
         (Phase.ERROR, "health_ok"): Phase.IDLE,
         (Phase.ERROR, "error_timeout"): Phase.IDLE,
     }
@@ -113,24 +114,26 @@ class Orchestrator:
         self._esp_min_distance = -1
         self._obstacle_latched = False
 
+        self._scan_active = False
         self._scan_end_ts: Optional[float] = None
         self._scan_labels: list[str] = []
-        self._capture_labels: Dict[str, list[str]] = {}
         self._last_scan_summary: Optional[str] = None
-        self._scan_prev_vision_mode: Optional[VisionMode] = None
+        self._capture_labels: Dict[str, list[str]] = {}
 
-        self._gas_warning = False
+        self._gas_state = "clear"
         self._gas_level: Optional[int] = None
 
         self._remote_session_active = False
         self._remote_last_seen = 0.0
-        self._last_led_state = "idle"
         
         orch_cfg = self.config.get("orchestrator", {}) or {}
         self.auto_trigger_enabled = bool(orch_cfg.get("auto_trigger_enabled", True))
         self.auto_trigger_interval = float(orch_cfg.get("auto_trigger_interval", 60.0))
         self.scan_duration_s = float(orch_cfg.get("scan_duration_s", 4.0))
-        self.gas_threshold = int(orch_cfg.get("gas_threshold", 800))
+        self.scan_turn_direction = str(orch_cfg.get("scan_turn_direction", "right")).lower()
+        self.gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 600))
+        self.gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 800))
+        self.scan_min_confidence = float(orch_cfg.get("scan_min_confidence", 0.6))
         
         stt_cfg = self.config.get("stt", {}) or {}
         self.stt_timeout_s = float(stt_cfg.get("timeout_seconds", 30.0))
@@ -145,16 +148,13 @@ class Orchestrator:
         self.vision_mode = self._coerce_vision_mode(default_mode)
 
     def _publish_led_state(self, state: str) -> None:
-        if state != "gas_danger":
-            self._last_led_state = state
-        effective_state = "gas_danger" if self._gas_warning else state
         publish_json(self.cmd_pub, TOPIC_DISPLAY_STATE, {
-            "state": effective_state,
+            "state": state,
             "phase": self._phase.name,
             "timestamp": int(time.time()),
             "source": "orchestrator",
         })
-        logger.debug("LED: %s", effective_state)
+        logger.debug("LED: %s", state)
 
     def _publish_display_text(self, text: str) -> None:
         publish_json(self.cmd_pub, TOPIC_DISPLAY_TEXT, {
@@ -232,6 +232,10 @@ class Orchestrator:
         self._publish_led_state("tts_processing")
         self._publish_display_text(f"Saying: {text[:120]}")
         normalized = self._normalize_direction(direction)
+        if normalized == "scan":
+            if self._transition("scan_start"):
+                self._start_scan(source="voice")
+            return
         if normalized != "stop":
             if self._esp_obstacle and normalized == "forward":
                 logger.warning("Blocked forward command due to obstacle")
@@ -257,6 +261,10 @@ class Orchestrator:
             logger.info("Status TTS skipped context=%s reason=transition_blocked text=%s", context, text[:120])
             self._publish_remote_event("tts_skipped", {"reason": "transition_blocked", "context": context, "text": text})
 
+    def _publish_status_tts(self, text: str, *, context: str) -> None:
+        publish_json(self.cmd_pub, TOPIC_TTS, {"text": text, "source": "orchestrator", "context": context})
+        logger.info("status_tts context=%s text=%s", context, text[:120])
+
     @staticmethod
     def _summarize_labels(labels: list[str]) -> str:
         counts: Dict[str, int] = {}
@@ -275,110 +283,57 @@ class Orchestrator:
                 parts.append(f"{count} {label_value}s")
         return ", ".join(parts)
 
-    @staticmethod
-    def _count_labels(labels: list[str]) -> Dict[str, int]:
-        counts: Dict[str, int] = {}
-        for label in labels:
-            label_value = (label or "").strip()
-            if not label_value or label_value == "none":
-                continue
-            counts[label_value] = counts.get(label_value, 0) + 1
-        return counts
-
-    def _start_scan(self, *, source: str) -> bool:
-        if self._phase != Phase.IDLE:
-            logger.warning("scan_start rejected reason=busy phase=%s", self._phase.name)
-            self._publish_remote_event("rejected", {"reason": "busy", "intent": "scan"})
-            return False
-        if not self._transition("scan_start"):
-            logger.warning("scan_start rejected reason=transition_blocked phase=%s", self._phase.name)
-            self._publish_remote_event("rejected", {"reason": "transition_blocked", "intent": "scan"})
-            return False
-        self._scan_end_ts = time.time() + self.scan_duration_s
+    def _start_scan(self, *, source: str) -> None:
+        now = time.time()
+        self._scan_active = True
+        self._scan_end_ts = now + max(0.5, self.scan_duration_s)
         self._scan_labels = []
-        self._scan_prev_vision_mode = self.vision_mode
         if self.vision_mode == VisionMode.OFF:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="scan")
+        direction = self.scan_turn_direction if self.scan_turn_direction in {"left", "right"} else "right"
+        publish_json(self.cmd_pub, TOPIC_NAV, {"direction": direction, "source": source})
         self._publish_led_state("scanning")
-        self._publish_display_text("Scanning 360")
-        publish_json(
-            self.cmd_pub,
-            TOPIC_NAV,
-            {
-                "direction": "right",
-                "source": source,
-                "duration_s": self.scan_duration_s,
-                "intent": "scan",
-            },
-        )
-        self._last_nav_direction = "right"
-        logger.info("scan_start source=%s duration_s=%.2f", source, self.scan_duration_s)
-        self._publish_remote_event("scan_start", {"source": source, "duration_s": self.scan_duration_s})
-        return True
+        self._publish_display_text("Scanning 360 degrees")
+        self._publish_status_tts("360 degree scan started.", context="scan_start")
+        logger.info("scan_start source=%s duration_s=%.2f direction=%s", source, self.scan_duration_s, direction)
+        self._publish_remote_event("scan_start", {
+            "duration_s": self.scan_duration_s,
+            "direction": direction,
+            "source": source,
+        })
 
-    def _finish_scan(self, *, reason: str, transition_event: str = "scan_complete") -> None:
-        publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "source": "scan", "reason": reason})
-        self._last_nav_direction = "stop"
-        if self._scan_prev_vision_mode == VisionMode.OFF:
-            self._set_vision_mode(VisionMode.OFF, source="scan")
-        self._scan_prev_vision_mode = None
-        summary = self._summarize_labels(self._scan_labels)
-        counts = self._count_labels(self._scan_labels)
-        self._last_scan_summary = summary
+    def _finish_scan(self, *, reason: str, transition_event: str) -> None:
+        if not self._scan_active:
+            return
+        self._scan_active = False
         self._scan_end_ts = None
+        publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "source": "orchestrator"})
+        summary = self._summarize_labels(self._scan_labels)
         self._scan_labels = []
-        logger.info("object_summary summary=%s counts=%s", summary, counts)
-        if self._transition(transition_event):
+        self._last_scan_summary = summary
+        logger.info("object_summary summary=%s", summary)
+        logger.info("scan_complete reason=%s", reason)
+        self._publish_remote_event("scan_complete", {"summary": summary, "reason": reason})
+        if self._phase == Phase.SCANNING and self._transition(transition_event):
             self._enter_idle()
-        if transition_event == "scan_abort":
-            logger.info("scan_abort reason=%s", reason)
-        else:
-            logger.info("scan_complete reason=%s", reason)
-        self._publish_remote_event(
-            "scan_complete",
-            {"summary": summary, "counts": counts, "reason": reason},
-        )
-        if summary == "no objects detected":
-            speak_text = "Scan complete. I detected no objects."
-        else:
-            speak_text = f"Scan complete. I detected {summary}."
-        self._maybe_speak_status(speak_text, context="scan_complete")
+        self._maybe_speak_status(f"Scan complete. I detected {summary}.", context="scan_complete")
 
     def _abort_scan(self, *, reason: str) -> None:
-        if self._phase != Phase.SCANNING:
-            return
-        logger.warning("scan_abort reason=%s", reason)
         self._finish_scan(reason=reason, transition_event="scan_abort")
 
-    def _update_gas_warning(self, mq2_value: Optional[int]) -> None:
-        if mq2_value is None:
-            return
-        self._gas_level = mq2_value
-        gas_warning = mq2_value >= self.gas_threshold
-        if gas_warning == self._gas_warning:
-            return
-        self._gas_warning = gas_warning
-        if gas_warning:
-            logger.warning("gas_warning level=%s threshold=%s", mq2_value, self.gas_threshold)
-            self._publish_led_state("gas_danger")
-            self._publish_display_text("Gas danger detected")
-            publish_json(
-                self.cmd_pub,
-                TOPIC_TTS,
-                {"text": "Warning. Gas level is above safe limits.", "source": "orchestrator"},
-            )
-            self._publish_remote_event(
-                "gas_warning",
-                {"level": mq2_value, "threshold": self.gas_threshold},
-            )
-        else:
-            logger.info("gas_clear level=%s threshold=%s", mq2_value, self.gas_threshold)
-            self._publish_led_state(self._last_led_state or "idle")
-            self._publish_remote_event("gas_clear", {"level": mq2_value, "threshold": self.gas_threshold})
-
     def _enter_idle(self) -> None:
-        self._publish_led_state("idle")
-        self._publish_display_text("Idle")
+        if self._gas_state == "danger":
+            self._publish_led_state("gas_danger")
+            self._publish_display_text("Gas danger")
+        elif self._gas_state == "warning":
+            self._publish_led_state("gas_warning")
+            self._publish_display_text("Gas warning")
+        elif self._scan_active:
+            self._publish_led_state("scanning")
+            self._publish_display_text("Scanning 360 degrees")
+        else:
+            self._publish_led_state("idle")
+            self._publish_display_text("Idle")
         # Vision lifecycle is managed explicitly; do not auto-resume here.
 
     def _notify_stt_failure(self, reason: str) -> None:
@@ -484,8 +439,10 @@ class Orchestrator:
     def on_vision(self, payload: Dict[str, Any]) -> None:
         self._last_vision = payload
         label_value = payload.get("label")
-        if self._phase == Phase.SCANNING:
-            self._scan_labels.append(str(label_value or "none"))
+        if self._scan_active:
+            confidence = float(payload.get("confidence", 0.0) or 0.0)
+            if confidence >= self.scan_min_confidence:
+                self._scan_labels.append(str(label_value or "none"))
             if len(self._scan_labels) > 50:
                 self._scan_labels = self._scan_labels[-50:]
         request_id = payload.get("request_id")
@@ -524,6 +481,10 @@ class Orchestrator:
                 speak = f"{speak} Obstacle ahead, stopping."
         logger.info("LLM response speak: %s", (speak or "")[:120])
         
+        if direction == "scan":
+            if self._transition("scan_start"):
+                self._start_scan(source="voice")
+            return
         if speak:
             if self._transition("llm_with_speech"):
                 self._enter_speaking(speak, direction)
@@ -538,7 +499,8 @@ class Orchestrator:
 
     def on_tts(self, payload: Dict[str, Any]) -> None:
         if payload.get("started"):
-            self._publish_led_state("speaking")
+            if self._gas_state != "danger":
+                self._publish_led_state("speaking")
             return
         done = payload.get("done") or payload.get("final") or payload.get("completed")
         if payload.get("notification"):
@@ -558,19 +520,61 @@ class Orchestrator:
             self._esp_obstacle = bool(data.get("obstacle", False)) or (data.get("is_safe") is False)
             self._esp_min_distance = int(data.get("min_distance", -1))
             mq2_value = data.get("mq2")
-            try:
-                mq2_value = int(mq2_value) if mq2_value is not None else None
-            except Exception:
-                mq2_value = None
-            self._update_gas_warning(mq2_value)
+            if mq2_value is not None:
+                self._gas_level = int(mq2_value)
+                if self._gas_level >= self.gas_danger_threshold:
+                    next_state = "danger"
+                elif self._gas_level >= self.gas_warning_threshold:
+                    next_state = "warning"
+                else:
+                    next_state = "clear"
+                if next_state != self._gas_state:
+                    previous = self._gas_state
+                    self._gas_state = next_state
+                    if next_state == "danger":
+                        logger.warning(
+                            "gas_danger level=%s warning_threshold=%s danger_threshold=%s",
+                            self._gas_level,
+                            self.gas_warning_threshold,
+                            self.gas_danger_threshold,
+                        )
+                        self._publish_led_state("gas_danger")
+                        self._publish_display_text("Danger: gas level critical")
+                        self._publish_remote_event("gas_danger", {"gas_level": self._gas_level})
+                        self._publish_status_tts("Danger. Gas level is critical.", context="gas_danger")
+                    elif next_state == "warning":
+                        logger.warning(
+                            "gas_warning level=%s warning_threshold=%s danger_threshold=%s",
+                            self._gas_level,
+                            self.gas_warning_threshold,
+                            self.gas_danger_threshold,
+                        )
+                        self._publish_led_state("gas_warning")
+                        self._publish_display_text("Warning: gas level high")
+                        self._publish_remote_event("gas_warning", {"gas_level": self._gas_level})
+                        self._publish_status_tts("Warning. Gas level is above safe limits.", context="gas_warning")
+                    else:
+                        logger.info(
+                            "gas_clear level=%s warning_threshold=%s danger_threshold=%s prev=%s",
+                            self._gas_level,
+                            self.gas_warning_threshold,
+                            self.gas_danger_threshold,
+                            previous,
+                        )
+                        self._publish_remote_event("gas_clear", {"gas_level": self._gas_level})
+                        if self._scan_active:
+                            self._publish_led_state("scanning")
+                            self._publish_display_text("Scanning 360 degrees")
+                        else:
+                            self._enter_idle()
             if self._esp_obstacle and not self._obstacle_latched:
                 self._obstacle_latched = True
                 logger.warning("Obstacle detected by ESP32; forcing stop")
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "obstacle"})
                 self._last_nav_direction = "stop"
                 self._publish_display_text("Obstacle detected - stopping")
-                if self._phase == Phase.SCANNING:
-                    self._abort_scan(reason="obstacle")
+                if self._scan_active:
+                    self._finish_scan(reason="safety_stop", transition_event="scan_abort")
             elif not self._esp_obstacle and self._obstacle_latched:
                 self._obstacle_latched = False
                 logger.info("Obstacle cleared by ESP32")
@@ -579,6 +583,8 @@ class Orchestrator:
             logger.critical("ESP32 collision alert!")
             publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "collision"})
             self._last_nav_direction = "stop"
+            if self._scan_active:
+                self._finish_scan(reason="collision", transition_event="scan_abort")
 
     def on_health(self, payload: Dict[str, Any]) -> None:
         ok = bool(payload.get("ok", True))
@@ -614,8 +620,8 @@ class Orchestrator:
                 if self._phase == Phase.THINKING:
                     self._enter_thinking(self._last_transcript)
 
-        if self._phase == Phase.SCANNING and self._scan_end_ts and now >= self._scan_end_ts:
-            self._finish_scan(reason="time_bound")
+        if self._scan_active and self._scan_end_ts and now >= self._scan_end_ts:
+            self._finish_scan(reason="completed", transition_event="scan_complete")
 
         if self._remote_session_active and self._remote_last_seen:
             if (now - self._remote_last_seen) > self.remote_session_timeout_s:
@@ -740,11 +746,6 @@ class Orchestrator:
             self._publish_remote_event("rejected", {"reason": "missing_intent", "payload": payload})
             return
 
-        if self._phase == Phase.SCANNING:
-            logger.warning("remote_intent rejected reason=scan_in_progress payload=%s", payload)
-            self._publish_remote_event("rejected", {"reason": "scan_in_progress", "payload": payload})
-            return
-
         if intent in {"enable_vision", "enable_perception"}:
             self._set_vision_mode(VisionMode.ON_NO_STREAM, source="remote_app")
             logger.info("remote_intent accepted intent=%s", intent)
@@ -798,11 +799,21 @@ class Orchestrator:
                 self._publish_remote_event("rejected", {"reason": "busy", "payload": payload})
             return
         if intent in {"scan", "start_scan"}:
-            if self._start_scan(source="remote_app"):
+            if self._phase != Phase.IDLE:
+                logger.warning("remote_intent rejected reason=busy payload=%s", payload)
+                self._publish_remote_event("rejected", {"reason": "busy", "payload": payload})
+                return
+            if self._transition("scan_start"):
+                self._start_scan(source="remote_app")
                 logger.info("remote_intent accepted intent=%s", intent)
                 self._publish_remote_event("accepted", {"intent": intent})
+            else:
+                logger.warning("remote_intent rejected reason=transition_blocked payload=%s", payload)
+                self._publish_remote_event("rejected", {"reason": "transition_blocked", "payload": payload})
             return
         if intent in {"stop", "stop_motion"}:
+            if self._scan_active:
+                self._finish_scan(reason="manual_stop", transition_event="scan_abort")
             logger.info(
                 "nav.command publish intent=%s direction=stop speed=%s duration=%s payload=%s",
                 intent,

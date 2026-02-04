@@ -1,0 +1,55 @@
+branch: experimental
+remote:
+origin	https://github.com/burahimasree/smart_car.git (fetch)
+origin	https://github.com/burahimasree/smart_car.git (push)
+head: e4b8758c9083d363aacedb9c9bb9e7c87a934bae
+unpushed: origin/experimental..HEAD
+status:
+ M config/system.yaml
+ M mobile_app/app/build.gradle.kts
+ M mobile_app/app/src/main/AndroidManifest.xml
+ M mobile_app/app/src/main/java/com/smartcar/supervision/MainActivity.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/data/IntentModels.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/data/Models.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/data/RobotRepository.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/ui/AppState.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/ui/AppViewModel.kt
+ M mobile_app/app/src/main/java/com/smartcar/supervision/ui/screens/MainScreen.kt
+ D mobile_app/app/src/main/res/drawable/app_icon_smart_car.avif
+ M src/core/orchestrator.py
+ M src/core/world_context.py
+ M src/llm/conversation_memory.py
+ M src/piled/led_ring_service.py
+ M src/remote/remote_interface.py
+ M src/vision/vision_runner.py
+ M systemd/led-ring.service
+?? MainScreen_BASELINE.kt
+?? android-logs/app_logs_20260201_174400.jsonl
+?? app_screenshot.png
+?? config/icon/
+?? dev_diff.txt
+?? dev_git_state.txt
+?? documentation/phase4_post_improvement_review.md
+?? mobile_app/app/src/main/java/com/smartcar/supervision/ui/GasNotificationHelper.kt
+?? mobile_app/app/src/main/res/drawable-v31/
+?? mobile_app/app/src/main/res/drawable/app_icon_smart_car.png
+?? pi_diff.txt
+?? pi_git_state.txt
+?? screen_control.png
+?? screen_home.png
+?? screen_logs.png
+?? screen_sensors.png
+?? screen_settings.png
+?? screen_task.png
+?? screen_vision.png
+?? test_scan_intent.py
+?? ui_control.xml
+?? ui_dump.xml
+?? ui_dump2.xml
+?? ui_home.xml
+?? ui_logs.xml
+?? ui_sensors.xml
+?? ui_settings.xml
+?? ui_task.xml
+?? ui_vision.xml
+?? verify_screen.png

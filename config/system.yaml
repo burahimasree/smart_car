@@ -7,8 +7,14 @@ orchestrator:
   # Disabled because it triggers on background noise when no one is speaking
   auto_trigger_enabled: false
   auto_trigger_interval: 60.0
+  # Experimental scan routine (orchestrator-driven rotation)
   scan_duration_s: 4.0
-  gas_threshold: 800
+  scan_turn_direction: right
+  # Gas warning threshold (MQ2)
+  gas_warning_threshold: 600
+  gas_danger_threshold: 800
+  # Scan confidence floor (filter low-confidence detections during scans)
+  scan_min_confidence: 0.6
 
 audio:
   # ═══════════════════════════════════════════════════════════════════════════
@@ -154,8 +160,24 @@ vision:
   label_path: ${PROJECT_ROOT}/models/vision/coco_labels.txt
   # Target FPS for inference (lower = less CPU, higher = more responsive)
   target_fps: 15
+  # Stream FPS for MJPEG (decoupled from inference)
+  stream_fps: 15
   # Vision lifecycle control
   default_mode: off
+  # Picamera2 controls (fixed settings for color stability)
+  use_picam2: true
+  picam2_width: 832
+  picam2_height: 468
+  picam2_fps: 12
+  picam2_controls:
+    FrameRate: 12
+    AwbEnable: false
+    AeEnable: false
+    ColourGains: [1.6, 1.6]
+    ExposureTime: 8000
+    AnalogueGain: 1.0
+  # Optional stream gamma correction (1.0 = disabled)
+  stream_gamma: 1.0
 
 remote_interface:
   bind_host: 0.0.0.0

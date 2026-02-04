@@ -2,6 +2,7 @@ package com.smartcar.supervision.data
 
 data class IntentRequest(
     val intent: String,
+    val text: String? = null,
     val direction: String? = null,
     val speed: Int? = null,
     val duration_ms: Int? = null,
