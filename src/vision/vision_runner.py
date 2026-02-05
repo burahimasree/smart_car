@@ -555,7 +555,13 @@ def run():
                             if grabber is not None:
                                 grabber.update_controls(picam2_controls)
                         action = str(msg.get("action", "")).strip().lower()
+                        if action:
+                            logger.info("Camera settings action=%s grabber_ready=%s", action, grabber is not None)
                         if action == "lock_awb" and grabber is not None:
+                            warmup_seconds = 0.8
+                            grabber.update_controls({"AwbEnable": True})
+                            logger.info("AWB warmup started (%.1fs)", warmup_seconds)
+                            time.sleep(warmup_seconds)
                             gains = grabber.get_awb_gains()
                             if gains is not None:
                                 grabber.update_controls({"AwbEnable": False, "ColourGains": gains})
@@ -567,8 +573,15 @@ def run():
                             else:
                                 publish_json(pub, TOPIC_REMOTE_EVENT, {
                                     "event": "awb_lock_failed",
+                                    "reason": "no_gains",
                                 })
                                 logger.warning("AWB lock failed: no gains")
+                        elif action == "lock_awb" and grabber is None:
+                            publish_json(pub, TOPIC_REMOTE_EVENT, {
+                                "event": "awb_lock_failed",
+                                "reason": "grabber_not_ready",
+                            })
+                            logger.warning("AWB lock failed: grabber not ready")
                         elif action == "unlock_awb" and grabber is not None:
                             grabber.update_controls({"AwbEnable": True, "ColourGains": (0.0, 0.0)})
                             publish_json(pub, TOPIC_REMOTE_EVENT, {
