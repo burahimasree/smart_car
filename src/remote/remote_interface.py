@@ -397,9 +397,9 @@ class RemoteSupervisor:
             self._save_raw_config(raw)
             self.config = load_config(self.config_path)
             if update_payload:
-                publish_json(self._pub_down, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
+                publish_json(self._pub, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
         elif update_payload:
-            publish_json(self._pub_down, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
+            publish_json(self._pub, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
 
         return {
             "ok": True,

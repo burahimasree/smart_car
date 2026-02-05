@@ -26,6 +26,7 @@ from src.core.ipc import (
     TOPIC_CMD_LISTEN_START,
     TOPIC_CMD_LISTEN_STOP,
     TOPIC_CMD_PAUSE_VISION,
+    TOPIC_CMD_CAMERA_SETTINGS,
     TOPIC_CMD_VISN_CAPTURE,
     TOPIC_CMD_VISION_MODE,
     TOPIC_DISPLAY_STATE,
@@ -689,6 +690,8 @@ class Orchestrator:
                 elif topic == TOPIC_ESP:
                     self.on_esp(payload)
                     publish_json(self.cmd_pub, TOPIC_ESP, payload)
+                elif topic == TOPIC_CMD_CAMERA_SETTINGS:
+                    publish_json(self.cmd_pub, TOPIC_CMD_CAMERA_SETTINGS, payload)
                 elif topic == TOPIC_HEALTH:
                     self.on_health(payload)
                 elif topic == TOPIC_REMOTE_SESSION:
