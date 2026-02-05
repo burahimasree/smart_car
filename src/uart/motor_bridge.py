@@ -79,8 +79,8 @@ class UARTMotorBridge:
     """Bidirectional UART bridge for ESP32 motor control with collision avoidance."""
 
     # Safety thresholds (backup to ESP32 safety)
-    STOP_DISTANCE_CM = 1000
-    WARNING_DISTANCE_CM = 1000
+    STOP_DISTANCE_CM = 10
+    WARNING_DISTANCE_CM = 10
 
     # Default command mapping (can be overridden from config)
     # Align with ESP32 sketch command tokens in esp-code.ino
@@ -224,6 +224,10 @@ class UARTMotorBridge:
         Returns (allowed, reason) tuple.
         """
         direction = (cmd.direction or "").lower()
+
+        # App commands are authoritative; bypass Pi-side safety checks.
+        if cmd.source == "remote_app":
+            return True, ""
         
         # Always allow stop, backward, turns, and non-movement commands
         if direction in ("stop", "backward", "left", "right", "status", "reset", "scan", "clearblock", "servo"):

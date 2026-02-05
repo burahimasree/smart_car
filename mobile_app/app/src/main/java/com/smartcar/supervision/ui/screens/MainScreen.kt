@@ -37,13 +37,12 @@ import androidx.compose.ui.unit.sp
 import com.smartcar.supervision.BuildConfig
 import com.smartcar.supervision.data.AppSettings
 import com.smartcar.supervision.ui.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
 // =============================================================================
@@ -388,6 +387,21 @@ fun ControlScreen(state: AppState, viewModel: AppViewModel) {
         val canControl = state.connection == ConnectionStatus.Online &&
             state.telemetry?.remote_session_active == true &&
             !state.intentInFlight
+        val controlBlockReason = when {
+            state.connection != ConnectionStatus.Online -> "Not connected"
+            state.telemetry?.remote_session_active != true -> "Remote session inactive"
+            state.intentInFlight -> "Intent in progress"
+            else -> null
+        }
+
+        if (controlBlockReason != null) {
+            Text(
+                text = "Controls disabled: $controlBlockReason",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error
+            )
+            Spacer(Modifier.height(6.dp))
+        }
 
         // Control Grid
         Column(
@@ -724,6 +738,7 @@ fun MjpegStreamView(url: String, modifier: Modifier = Modifier) {
 
     LaunchedEffect(url) {
         withContext(Dispatchers.IO) {
+            var response: okhttp3.Response? = null
             try {
                 val client = OkHttpClient.Builder()
                     .connectTimeout(10, TimeUnit.SECONDS)
@@ -735,71 +750,71 @@ fun MjpegStreamView(url: String, modifier: Modifier = Modifier) {
                     .header("Accept", "multipart/x-mixed-replace")
                     .build()
 
-                val response = client.newCall(request).execute()
+                response = client.newCall(request).execute()
                 if (!response.isSuccessful) {
-                    error = "Stream error: ${response.code}"
+                    withContext(Dispatchers.Main) {
+                        error = "Stream error: ${response.code}"
+                    }
                     return@withContext
                 }
 
                 val body = response.body ?: run {
-                    error = "Empty response"
+                    withContext(Dispatchers.Main) {
+                        error = "Empty response"
+                    }
                     return@withContext
                 }
 
-                val inputStream = BufferedInputStream(body.byteStream())
-                val boundaryPattern = "--".toByteArray()
-                val buffer = ByteArrayOutputStream()
-
-                var inImage = false
-                var headersParsed = false
-                val headerBuffer = StringBuilder()
+                val source = body.source()
+                val boundary = parseBoundary(response.header("Content-Type"))
+                val minFrameIntervalMs = 100L
+                var lastFrameAt = 0L
 
                 while (isActive) {
-                    val b = inputStream.read()
-                    if (b == -1) break
+                    val line = source.readUtf8Line() ?: break
+                    if (!line.startsWith(boundary)) {
+                        continue
+                    }
 
-                    if (!inImage) {
-                        headerBuffer.append(b.toChar())
-                        val headers = headerBuffer.toString()
-                        if (headers.contains("\r\n\r\n") || headers.contains("\n\n")) {
-                            if (headers.contains("Content-Type: image/jpeg", ignoreCase = true)) {
-                                inImage = true
-                                headersParsed = true
-                                buffer.reset()
-                            }
-                            headerBuffer.clear()
+                    var contentLength = -1
+                    while (true) {
+                        val header = source.readUtf8Line() ?: break
+                        if (header.isBlank()) break
+                        val parts = header.split(":", limit = 2)
+                        if (parts.size == 2 && parts[0].trim().equals("Content-Length", true)) {
+                            contentLength = parts[1].trim().toIntOrNull() ?: -1
                         }
-                    } else {
-                        buffer.write(b)
-                        val data = buffer.toByteArray()
-                        
-                        // Check for JPEG end marker (FFD9)
-                        if (data.size >= 2 && 
-                            data[data.size - 2] == 0xFF.toByte() && 
-                            data[data.size - 1] == 0xD9.toByte()) {
-                            
-                            // Decode frame
-                            try {
-                                val decoded = BitmapFactory.decodeByteArray(data, 0, data.size)
-                                if (decoded != null) {
-                                    withContext(Dispatchers.Main) {
-                                        bitmap = decoded
-                                        error = null
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                // Skip bad frame
-                            }
-                            
-                            buffer.reset()
-                            inImage = false
+                    }
+
+                    if (contentLength <= 0) {
+                        continue
+                    }
+
+                    val bytes = source.readByteArray(contentLength.toLong())
+                    source.readUtf8Line()
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastFrameAt < minFrameIntervalMs) {
+                        continue
+                    }
+                    lastFrameAt = now
+
+                    val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (decoded != null) {
+                        withContext(Dispatchers.Main) {
+                            bitmap = decoded
+                            error = null
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                // Ignore cancellation
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     error = "Stream error: ${e.message}"
                 }
+            } finally {
+                response?.close()
             }
         }
     }
@@ -1816,4 +1831,15 @@ fun formatTime(epochMs: Long): String {
     val instant = java.time.Instant.ofEpochMilli(epochMs)
     val zoned = instant.atZone(java.time.ZoneId.systemDefault())
     return java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss").format(zoned)
+}
+
+private fun parseBoundary(contentType: String?): String {
+    if (contentType.isNullOrBlank()) return "--frame"
+    val boundary = contentType.split(";")
+        .map { it.trim() }
+        .firstOrNull { it.startsWith("boundary=") }
+        ?.substringAfter("boundary=")
+        ?.trim('"')
+        ?: "frame"
+    return if (boundary.startsWith("--")) boundary else "--$boundary"
 }

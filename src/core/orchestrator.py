@@ -135,6 +135,7 @@ class Orchestrator:
         self.gas_warning_threshold = int(orch_cfg.get("gas_warning_threshold", 1000))
         self.gas_danger_threshold = int(orch_cfg.get("gas_danger_threshold", 1000))
         self.scan_min_confidence = float(orch_cfg.get("scan_min_confidence", 0.6))
+        self.obstacle_stop_distance_cm = int(orch_cfg.get("obstacle_stop_distance_cm", 10))
         
         stt_cfg = self.config.get("stt", {}) or {}
         self.stt_timeout_s = float(stt_cfg.get("timeout_seconds", 30.0))
@@ -238,7 +239,7 @@ class Orchestrator:
                 self._start_scan(source="voice")
             return
         if normalized != "stop":
-            if self._esp_obstacle and normalized == "forward":
+            if normalized == "forward" and self._is_obstacle_blocking():
                 logger.warning("Blocked forward command due to obstacle")
                 publish_json(
                     self.cmd_pub,
@@ -476,7 +477,7 @@ class Orchestrator:
         body = payload.get("json") or {}
         speak = body.get("speak") or payload.get("text", "")
         direction = self._normalize_direction(body.get("direction"))
-        if self._esp_obstacle and direction == "forward":
+        if direction == "forward" and self._is_obstacle_blocking():
             direction = "stop"
             if speak:
                 speak = f"{speak} Obstacle ahead, stopping."
@@ -568,7 +569,7 @@ class Orchestrator:
                             self._publish_display_text("Scanning 360 degrees")
                         else:
                             self._enter_idle()
-            if self._esp_obstacle and not self._obstacle_latched:
+            if self._is_obstacle_blocking() and not self._obstacle_latched:
                 self._obstacle_latched = True
                 logger.warning("Obstacle detected by ESP32; forcing stop")
                 publish_json(self.cmd_pub, TOPIC_NAV, {"direction": "stop", "reason": "obstacle"})
@@ -576,7 +577,7 @@ class Orchestrator:
                 self._publish_display_text("Obstacle detected - stopping")
                 if self._scan_active:
                     self._finish_scan(reason="safety_stop", transition_event="scan_abort")
-            elif not self._esp_obstacle and self._obstacle_latched:
+            elif not self._is_obstacle_blocking() and self._obstacle_latched:
                 self._obstacle_latched = False
                 logger.info("Obstacle cleared by ESP32")
         alert = payload.get("alert")
@@ -597,6 +598,11 @@ class Orchestrator:
             logger.info("Health restored")
             self._transition("health_ok")
             self._enter_idle()
+
+    def _is_obstacle_blocking(self) -> bool:
+        if self._esp_min_distance <= 0:
+            return False
+        return self._esp_min_distance <= self.obstacle_stop_distance_cm
 
     def _check_timeouts(self) -> None:
         now = time.time()
