@@ -1416,18 +1416,18 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
             }
         }
     }
-    val defaultGamma = "1.0"
+    val defaultGamma = "1.3"
     val defaultCamWidth = "832"
     val defaultCamHeight = "468"
     val defaultCamFps = "12"
     val defaultControls = mapOf(
         "FrameRate" to "12",
-        "AwbEnable" to "false",
-        "AeEnable" to "false",
-        "ColourGains" to "1.6,1.6",
-        "ExposureTime" to "8000",
+        "AwbEnable" to "true",
+        "AeEnable" to "true",
+        "ColourGains" to "1.0,1.0",
+        "ExposureTime" to "0",
         "AnalogueGain" to "1.0",
-        "Brightness" to "0.0",
+        "Brightness" to "0.2",
         "Contrast" to "1.0",
         "Saturation" to "1.0",
         "Sharpness" to "1.0",
