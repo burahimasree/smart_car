@@ -95,6 +95,7 @@ data class CameraSettings(
     val picam2_height: Int? = null,
     val picam2_fps: Int? = null,
     val picam2_controls: Map<String, String>? = null,
+    val awb_locked: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -111,6 +112,7 @@ data class CameraSettingsUpdate(
     val picam2_height: Int? = null,
     val picam2_fps: Int? = null,
     val picam2_controls: Map<String, String>? = null,
+    val awb_lock: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)

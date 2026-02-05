@@ -298,12 +298,21 @@ class RemoteSupervisor:
         controls = vision_cfg.get("picam2_controls") or {}
         if not isinstance(controls, dict):
             controls = {}
+        awb_enabled = controls.get("AwbEnable")
+        gains = controls.get("ColourGains")
+        awb_locked = False
+        if awb_enabled is False and isinstance(gains, (list, tuple)):
+            try:
+                awb_locked = bool(float(gains[0]) != 0.0 or float(gains[1]) != 0.0)
+            except (TypeError, ValueError, IndexError):
+                awb_locked = False
         return {
             "stream_gamma": vision_cfg.get("stream_gamma", 1.0),
             "picam2_width": vision_cfg.get("picam2_width"),
             "picam2_height": vision_cfg.get("picam2_height"),
             "picam2_fps": vision_cfg.get("picam2_fps"),
             "picam2_controls": self._stringify_controls(controls),
+            "awb_locked": awb_locked,
         }
 
     def _update_camera_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -314,6 +323,7 @@ class RemoteSupervisor:
         requires_restart = False
         updated = False
         update_payload: Dict[str, Any] = {}
+        awb_action: Optional[str] = None
 
         if "picam2_controls" in payload and isinstance(payload.get("picam2_controls"), dict):
             controls = vision_cfg.get("picam2_controls") or {}
@@ -370,12 +380,26 @@ class RemoteSupervisor:
             except (TypeError, ValueError):
                 pass
 
+        if "awb_lock" in payload:
+            awb_action = "lock_awb" if payload.get("awb_lock") else "unlock_awb"
+            update_payload["action"] = awb_action
+            if awb_action == "unlock_awb":
+                controls = vision_cfg.get("picam2_controls") or {}
+                if not isinstance(controls, dict):
+                    controls = {}
+                controls["AwbEnable"] = True
+                controls["ColourGains"] = [0.0, 0.0]
+                vision_cfg["picam2_controls"] = controls
+                updated = True
+
         if updated:
             raw["vision"] = vision_cfg
             self._save_raw_config(raw)
             self.config = load_config(self.config_path)
             if update_payload:
                 publish_json(self._pub_down, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
+        elif update_payload:
+            publish_json(self._pub_down, TOPIC_CMD_CAMERA_SETTINGS, update_payload)
 
         return {
             "ok": True,
@@ -528,6 +552,36 @@ class RemoteSupervisor:
                     event = payload.get("event")
                     if event == "scan_complete":
                         self.telemetry.last_scan_summary = payload.get("summary")
+                    elif event == "awb_locked":
+                        gains = payload.get("gains") or []
+                        if isinstance(gains, list) and len(gains) >= 2:
+                            raw = self._load_raw_config()
+                            vision_cfg = raw.get("vision") if isinstance(raw.get("vision"), dict) else {}
+                            if not isinstance(vision_cfg, dict):
+                                vision_cfg = {}
+                            controls = vision_cfg.get("picam2_controls") or {}
+                            if not isinstance(controls, dict):
+                                controls = {}
+                            controls["AwbEnable"] = False
+                            controls["ColourGains"] = [float(gains[0]), float(gains[1])]
+                            vision_cfg["picam2_controls"] = controls
+                            raw["vision"] = vision_cfg
+                            self._save_raw_config(raw)
+                            self.config = load_config(self.config_path)
+                    elif event == "awb_unlocked":
+                        raw = self._load_raw_config()
+                        vision_cfg = raw.get("vision") if isinstance(raw.get("vision"), dict) else {}
+                        if not isinstance(vision_cfg, dict):
+                            vision_cfg = {}
+                        controls = vision_cfg.get("picam2_controls") or {}
+                        if not isinstance(controls, dict):
+                            controls = {}
+                        controls["AwbEnable"] = True
+                        controls["ColourGains"] = [0.0, 0.0]
+                        vision_cfg["picam2_controls"] = controls
+                        raw["vision"] = vision_cfg
+                        self._save_raw_config(raw)
+                        self.config = load_config(self.config_path)
                     elif event == "gas_warning":
                         self.telemetry.gas_warning = True
                         self.telemetry.gas_severity = "warning"

@@ -1623,6 +1623,34 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
             }
 
             Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        viewModel.updateCameraSettings(
+                            com.smartcar.supervision.data.CameraSettingsUpdate(awb_lock = true)
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Lock AWB Gains")
+                }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.updateCameraSettings(
+                            com.smartcar.supervision.data.CameraSettingsUpdate(awb_lock = false)
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Unlock AWB")
+                }
+            }
+            cameraSettings?.awb_locked?.let { locked ->
+                Spacer(Modifier.height(6.dp))
+                Text("AWB locked: ${if (locked) "yes" else "no"}", fontSize = 12.sp, color = Color.Gray)
+            }
+
+            Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
                     editGamma = defaultGamma

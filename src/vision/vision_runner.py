@@ -17,6 +17,7 @@ from src.core.ipc import (
     TOPIC_CMD_CAMERA_SETTINGS,
     TOPIC_CMD_VISN_CAPTURE,
     TOPIC_CMD_VISION_MODE,
+    TOPIC_REMOTE_EVENT,
     TOPIC_VISN,
     TOPIC_VISN_CAPTURED,
     TOPIC_VISN_FRAME,
@@ -185,6 +186,18 @@ class LatestFrameGrabber(threading.Thread):
         except Exception as exc:
             logger.warning("Picamera2 control update failed: %s", exc)
             return False
+
+    def get_awb_gains(self) -> Optional[tuple[float, float]]:
+        if self.picam2 is None:
+            return None
+        try:
+            metadata = self.picam2.capture_metadata()
+            gains = metadata.get("ColourGains") if isinstance(metadata, dict) else None
+            if isinstance(gains, (list, tuple)) and len(gains) >= 2:
+                return float(gains[0]), float(gains[1])
+        except Exception as exc:
+            logger.warning("Failed to read AWB gains: %s", exc)
+        return None
 
 
 class MockDetector:
@@ -541,6 +554,27 @@ def run():
                                     picam2_controls["ColourGains"] = (float(gains[0]), float(gains[1]))
                             if grabber is not None:
                                 grabber.update_controls(picam2_controls)
+                        action = str(msg.get("action", "")).strip().lower()
+                        if action == "lock_awb" and grabber is not None:
+                            gains = grabber.get_awb_gains()
+                            if gains is not None:
+                                grabber.update_controls({"AwbEnable": False, "ColourGains": gains})
+                                publish_json(pub, TOPIC_REMOTE_EVENT, {
+                                    "event": "awb_locked",
+                                    "gains": [gains[0], gains[1]],
+                                })
+                                logger.info("AWB locked with gains=%s", gains)
+                            else:
+                                publish_json(pub, TOPIC_REMOTE_EVENT, {
+                                    "event": "awb_lock_failed",
+                                })
+                                logger.warning("AWB lock failed: no gains")
+                        elif action == "unlock_awb" and grabber is not None:
+                            grabber.update_controls({"AwbEnable": True, "ColourGains": (0.0, 0.0)})
+                            publish_json(pub, TOPIC_REMOTE_EVENT, {
+                                "event": "awb_unlocked",
+                            })
+                            logger.info("AWB unlocked")
                         if "stream_gamma" in msg:
                             try:
                                 stream_gamma = float(msg.get("stream_gamma", stream_gamma))
