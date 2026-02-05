@@ -1416,7 +1416,7 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
             }
         }
     }
-    val defaultGamma = "1.3"
+    val defaultGamma = "1.2"
     val defaultCamWidth = "832"
     val defaultCamHeight = "468"
     val defaultCamFps = "12"
@@ -1425,11 +1425,9 @@ fun SettingsScreen(state: AppState, viewModel: AppViewModel) {
         "AwbEnable" to "true",
         "AeEnable" to "true",
         "ColourGains" to "1.0,1.0",
-        "ExposureTime" to "0",
-        "AnalogueGain" to "1.0",
-        "Brightness" to "0.2",
+        "Brightness" to "0.1",
         "Contrast" to "1.0",
-        "Saturation" to "1.0",
+        "Saturation" to "1.1",
         "Sharpness" to "1.0",
     )
     var newControlKey by remember { mutableStateOf("") }
